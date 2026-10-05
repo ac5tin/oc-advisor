@@ -65,6 +65,54 @@ export interface BranchMessage {
   content?: BranchPart[];
 }
 
+export class AdvisorError extends Error {}
+
+export interface AdvisorCallDeps {
+  readContext(sessionID: string): Promise<unknown>;
+  listToolNames(): Promise<string[]>;
+  generateText(model: ModelRef, prompt: string): Promise<string>;
+}
+
+/** Build the reviewer prompt and run one side-call. Throws AdvisorError with user-facing text on failure. */
+export async function runAdvisorCall(
+  deps: AdvisorCallDeps,
+  input: { sessionID: string; callId: string; ref: ModelRef },
+): Promise<string> {
+  const messages = await deps.readContext(input.sessionID).catch((e: unknown) => {
+    throw new AdvisorError(`could not read session context: ${e instanceof Error ? e.message : String(e)}`);
+  });
+  const toolNames = await deps.listToolNames().catch(() => ["advisor"]);
+  const branch = buildAdvisorPrompt(normalizeBranch(messages), {
+    inflightCallId: input.callId,
+    toolNames,
+  });
+  const text = await deps
+    .generateText(input.ref, `${ADVISOR_SYSTEM_PROMPT}\n\n${branch}`)
+    .catch((e: unknown) => {
+      throw new AdvisorError(`Advisor call failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  if (!text.trim()) throw new AdvisorError("Advisor returned no text content.");
+  return text.trim();
+}
+
+/** Normalize raw session messages into BranchMessage shapes. */
+export function normalizeBranch(messages: unknown): BranchMessage[] {
+  if (!Array.isArray(messages)) return [];
+  return (messages as any[]).map((m) => {
+    const content = Array.isArray(m.content)
+      ? (m.content as any[]).map(
+          (p): BranchPart => ({ type: p.type, text: p.text, id: p.id, name: p.name }),
+        )
+      : undefined;
+    const out: BranchMessage = { type: String(m.type ?? "unknown") };
+    if (typeof m.text === "string") out.text = m.text;
+    if (typeof m.agent === "string") out.agent = m.agent;
+    if (m.model && typeof m.model === "object") out.model = { providerID: m.model.providerID, id: m.model.id };
+    if (content) out.content = content;
+    return out;
+  });
+}
+
 function renderMessage(msg: BranchMessage, inflightCallId: string | undefined): string | null {
   if (msg.type === "user" || msg.type === "synthetic") {
     if (!msg.text) return null;
