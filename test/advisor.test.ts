@@ -12,6 +12,7 @@ import {
   runAdvisorCall,
 } from "../src/advisor";
 import { sanitizeOptions } from "../src/config";
+import { createAdvisorCommand } from "../src/command";
 
 describe("parseModelRef", () => {
   test("splits provider, model with slashes, and variant", () => {
@@ -197,6 +198,34 @@ describe("runAdvisorCall", () => {
     );
     expect(seen).toContain("Available tools: advisor");
   });
+
+  test("forwards tool results and the abort signal", async () => {
+    let seen = { model: {}, prompt: "", signal: undefined as unknown };
+    const text = await runAdvisorCall(
+      {
+        readContext: async () => [
+          { id: "m1", type: "user", text: "go" },
+          {
+            id: "m2",
+            type: "assistant",
+            agent: "build",
+            content: [
+              { type: "tool", id: "c1", name: "read", state: { status: "completed", input: {}, content: [{ type: "text", text: "bytes" }] } },
+            ],
+          },
+        ],
+        listToolNames: async () => ["read", "advisor"],
+        generateText: async (model: any, prompt: string, opts?: { signal?: unknown }) => {
+          seen = { model, prompt, signal: opts?.signal };
+          return "plan";
+        },
+      },
+      { sessionID: "s1", callId: "call_9", ref: { providerID: "p", id: "s" }, signal: "sig" as any },
+    );
+    expect(text).toBe("plan");
+    expect(seen.prompt).toContain("bytes");
+    expect(seen.signal).toBe("sig");
+  });
 });
 
 describe("normalizeBranch", () => {
@@ -210,10 +239,41 @@ describe("normalizeBranch", () => {
     expect(out[1].agent).toBe("build");
     expect(out[1].content?.length).toBe(1);
   });
-});
 
-import { sanitizeOptions } from "../src/config";
-import { createAdvisorCommand } from "../src/command";
+  test("extracts tool call input and completed result text", () => {
+    const out = normalizeBranch([
+      {
+        id: "m",
+        type: "assistant",
+        agent: "build",
+        content: [
+          {
+            type: "tool",
+            id: "call_1",
+            name: "read",
+            state: { status: "completed", input: { path: "x.ts" }, content: [{ type: "text", text: "file-bytes" }] },
+          },
+        ],
+      },
+    ]);
+    expect(out[0].content?.[0].input).toBe('{"path":"x.ts"}');
+    expect(out[0].content?.[0].result).toBe("file-bytes");
+  });
+
+  test("extracts tool error message as result", () => {
+    const out = normalizeBranch([
+      {
+        id: "m",
+        type: "assistant",
+        agent: "build",
+        content: [
+          { type: "tool", id: "call_2", name: "shell", state: { status: "error", input: { cmd: "nope" }, error: { message: "boom" } } },
+        ],
+      },
+    ]);
+    expect(out[0].content?.[0].result).toContain("boom");
+  });
+});
 
 function fakeCtx() {
   const store = new Map<string, unknown>();

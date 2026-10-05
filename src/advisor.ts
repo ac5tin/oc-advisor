@@ -55,6 +55,8 @@ export interface BranchPart {
   text?: string;
   id?: string;
   name?: string;
+  input?: string;
+  result?: string;
 }
 
 export interface BranchMessage {
@@ -70,13 +72,13 @@ export class AdvisorError extends Error {}
 export interface AdvisorCallDeps {
   readContext(sessionID: string): Promise<unknown>;
   listToolNames(): Promise<string[]>;
-  generateText(model: ModelRef, prompt: string): Promise<string>;
+  generateText(model: ModelRef, prompt: string, opts?: { signal?: AbortSignal }): Promise<string>;
 }
 
 /** Build the reviewer prompt and run one side-call. Throws AdvisorError with user-facing text on failure. */
 export async function runAdvisorCall(
   deps: AdvisorCallDeps,
-  input: { sessionID: string; callId: string; ref: ModelRef },
+  input: { sessionID: string; callId: string; ref: ModelRef; signal?: AbortSignal },
 ): Promise<string> {
   const messages = await deps.readContext(input.sessionID).catch((e: unknown) => {
     throw new AdvisorError(`could not read session context: ${e instanceof Error ? e.message : String(e)}`);
@@ -87,7 +89,7 @@ export async function runAdvisorCall(
     toolNames,
   });
   const text = await deps
-    .generateText(input.ref, `${ADVISOR_SYSTEM_PROMPT}\n\n${branch}`)
+    .generateText(input.ref, `${ADVISOR_SYSTEM_PROMPT}\n\n${branch}`, { signal: input.signal })
     .catch((e: unknown) => {
       throw new AdvisorError(`Advisor call failed: ${e instanceof Error ? e.message : String(e)}`);
     });
@@ -101,7 +103,7 @@ export function normalizeBranch(messages: unknown): BranchMessage[] {
   return (messages as any[]).map((m) => {
     const content = Array.isArray(m.content)
       ? (m.content as any[]).map(
-          (p): BranchPart => ({ type: p.type, text: p.text, id: p.id, name: p.name }),
+          (p): BranchPart => ({ type: p.type, text: p.text, id: p.id, name: p.name, ...toolIO(p) }),
         )
       : undefined;
     const out: BranchMessage = { type: String(m.type ?? "unknown") };
@@ -111,6 +113,37 @@ export function normalizeBranch(messages: unknown): BranchMessage[] {
     if (content) out.content = content;
     return out;
   });
+}
+
+function textParts(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const out: string[] = [];
+  for (const c of content as any[]) {
+    if (c && c.type === "text" && typeof c.text === "string" && c.text) out.push(c.text);
+  }
+  return out;
+}
+
+function toolIO(part: any): { input?: string; result?: string } {
+  const state = part?.state;
+  if (!state || typeof state !== "object") return {};
+  const out: { input?: string; result?: string } = {};
+  if (state.input !== undefined) {
+    try {
+      out.input = JSON.stringify(state.input);
+    } catch {
+      out.input = String(state.input);
+    }
+  }
+  if (state.status === "completed") {
+    const texts = textParts(state.content);
+    if (texts.length > 0) out.result = texts.join("\n");
+  } else if (state.status === "error") {
+    const message = state.error && typeof state.error.message === "string" ? state.error.message : "unknown error";
+    const texts = textParts(state.content);
+    out.result = texts.length > 0 ? `${message}\n${texts.join("\n")}` : message;
+  }
+  return out;
 }
 
 function renderMessage(msg: BranchMessage, inflightCallId: string | undefined): string | null {
@@ -125,7 +158,10 @@ function renderMessage(msg: BranchMessage, inflightCallId: string | undefined): 
   const lines: string[] = [];
   for (const p of parts) {
     if (typeof p.text === "string" && p.text) lines.push(p.text);
-    else if (p.name) lines.push(`tool call ${p.name}${p.id ? ` (${p.id})` : ""}`);
+    else if (p.name) {
+      lines.push(`tool call ${p.name}${p.id ? ` (${p.id})` : ""}${p.input ? ` input: ${p.input}` : ""}`);
+      if (p.result) lines.push(`result:\n${p.result}`);
+    }
   }
   if (msg.text && lines.length === 0) lines.push(msg.text);
   if (lines.length === 0) return null;

@@ -64,19 +64,22 @@ export default Plugin.define({
                   toArray(await ctx.tool.list())
                     .map((t) => t.id ?? t.name)
                     .filter((n) => typeof n === "string"),
-                generateText: async (model, prompt) => {
-                  const result = await ctx.generate.text({
-                    model: {
-                      providerID: model.providerID,
-                      id: model.id,
-                      ...(model.variant ? { variant: model.variant } : {}),
+                generateText: async (model, prompt, opts) => {
+                  const result = await ctx.generate.text(
+                    {
+                      model: {
+                        providerID: model.providerID,
+                        id: model.id,
+                        ...(model.variant ? { variant: model.variant } : {}),
+                      },
+                      prompt,
                     },
-                    prompt,
-                  });
+                    opts?.signal ? { signal: opts.signal } : undefined,
+                  );
                   return result?.text ?? "";
                 },
               },
-              { sessionID, callId: context.id, ref },
+              { sessionID, callId: context.id, ref, signal: context.signal },
             );
             return { content: text };
           } catch (e) {

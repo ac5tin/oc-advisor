@@ -41,7 +41,7 @@ export function createAdvisorCommand(host: CommandHost): AdvisorCommand {
       }
       if (arg.action === "off") {
         await host.save({ ...config, model: undefined });
-        await reply("Advisor disabled. Reply with one short confirmation.");
+        await reply("Advisor disabled (a static options.model in opencode.json will re-enable it on restart). Reply with one short confirmation.");
         return;
       }
       const ref = parseModelRef(arg.model);

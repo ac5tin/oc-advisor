@@ -55,7 +55,7 @@ async function runAdvisorCall(deps, input) {
   });
   const text = await deps.generateText(input.ref, `${ADVISOR_SYSTEM_PROMPT}
 
-${branch}`).catch((e) => {
+${branch}`, { signal: input.signal }).catch((e) => {
     throw new AdvisorError(`Advisor call failed: ${e instanceof Error ? e.message : String(e)}`);
   });
   if (!text.trim())
@@ -66,7 +66,7 @@ function normalizeBranch(messages) {
   if (!Array.isArray(messages))
     return [];
   return messages.map((m) => {
-    const content = Array.isArray(m.content) ? m.content.map((p) => ({ type: p.type, text: p.text, id: p.id, name: p.name })) : undefined;
+    const content = Array.isArray(m.content) ? m.content.map((p) => ({ type: p.type, text: p.text, id: p.id, name: p.name, ...toolIO(p) })) : undefined;
     const out = { type: String(m.type ?? "unknown") };
     if (typeof m.text === "string")
       out.text = m.text;
@@ -78,6 +78,42 @@ function normalizeBranch(messages) {
       out.content = content;
     return out;
   });
+}
+function textParts(content) {
+  if (!Array.isArray(content))
+    return [];
+  const out = [];
+  for (const c of content) {
+    if (c && c.type === "text" && typeof c.text === "string" && c.text)
+      out.push(c.text);
+  }
+  return out;
+}
+function toolIO(part) {
+  const state = part?.state;
+  if (!state || typeof state !== "object")
+    return {};
+  const out = {};
+  if (state.input !== undefined) {
+    try {
+      out.input = JSON.stringify(state.input);
+    } catch {
+      out.input = String(state.input);
+    }
+  }
+  if (state.status === "completed") {
+    const texts = textParts(state.content);
+    if (texts.length > 0)
+      out.result = texts.join(`
+`);
+  } else if (state.status === "error") {
+    const message = state.error && typeof state.error.message === "string" ? state.error.message : "unknown error";
+    const texts = textParts(state.content);
+    out.result = texts.length > 0 ? `${message}
+${texts.join(`
+`)}` : message;
+  }
+  return out;
 }
 function renderMessage(msg, inflightCallId) {
   if (msg.type === "user" || msg.type === "synthetic") {
@@ -94,8 +130,12 @@ ${msg.text}`;
   for (const p of parts) {
     if (typeof p.text === "string" && p.text)
       lines.push(p.text);
-    else if (p.name)
-      lines.push(`tool call ${p.name}${p.id ? ` (${p.id})` : ""}`);
+    else if (p.name) {
+      lines.push(`tool call ${p.name}${p.id ? ` (${p.id})` : ""}${p.input ? ` input: ${p.input}` : ""}`);
+      if (p.result)
+        lines.push(`result:
+${p.result}`);
+    }
   }
   if (msg.text && lines.length === 0)
     lines.push(msg.text);
@@ -214,7 +254,7 @@ function createAdvisorCommand(host) {
       }
       if (arg.action === "off") {
         await host.save({ ...config, model: undefined });
-        await reply("Advisor disabled. Reply with one short confirmation.");
+        await reply("Advisor disabled (a static options.model in opencode.json will re-enable it on restart). Reply with one short confirmation.");
         return;
       }
       const ref = parseModelRef(arg.model);
@@ -286,7 +326,7 @@ var src_default = Plugin.define({
             const text = await runAdvisorCall({
               readContext: async (id) => ctx.session.context({ sessionID: id }),
               listToolNames: async () => toArray2(await ctx.tool.list()).map((t) => t.id ?? t.name).filter((n) => typeof n === "string"),
-              generateText: async (model, prompt) => {
+              generateText: async (model, prompt, opts) => {
                 const result = await ctx.generate.text({
                   model: {
                     providerID: model.providerID,
@@ -294,10 +334,10 @@ var src_default = Plugin.define({
                     ...model.variant ? { variant: model.variant } : {}
                   },
                   prompt
-                });
+                }, opts?.signal ? { signal: opts.signal } : undefined);
                 return result?.text ?? "";
               }
-            }, { sessionID, callId: context.id, ref });
+            }, { sessionID, callId: context.id, ref, signal: context.signal });
             return { content: text };
           } catch (e) {
             return { content: e instanceof AdvisorError ? e.message : `Advisor call failed: ${errText(e)}` };

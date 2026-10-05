@@ -17,6 +17,14 @@ Pattern adapted from Anthropic's [advisor tool](https://platform.claude.com/docs
 
 Restart opencode after adding. Requires opencode v2 (tested on 2.0.23).
 
+> **Install notes.** Git-based installs need npm to allow git
+> dependencies (npm 12 blocks them by default):
+> `npm config set allow-git all`. If `opencode plugin add` fails in
+> your environment with `NpmInstallFailedError`, add the entry to
+> `opencode.json` manually and restart — the server installs missing
+> packages in the background. As a fallback, point the entry at a local
+> clone: `"/path/to/oc-advisor/.opencode/plugins"`.
+
 ## Usage
 
 Pick a reviewer model:
@@ -66,6 +74,7 @@ Static config in `opencode.json` (takes precedence, restart to apply):
 ## Behavior
 
 - **Off costs nothing** — with no model selected (or a blocklisted executor), the tool is stripped from the request so its guidance never enters the prompt.
+- **Same model twice bills twice** — nothing stops you from setting the advisor to the model you're already driving with. List strong executors in `disabledForModels` to skip the second opinion when it adds no value.
 - **Every failure returns a normal tool result** — the executor reads the text and keeps going: no model configured, misconfigured model, unknown model, unsupported variant, call limit reached, empty response, call error.
 - **Recursion-safe** — the reviewer is invoked with no tools via a stateless side-call.
 
