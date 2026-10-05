@@ -8,8 +8,6 @@ Pattern adapted from Anthropic's [advisor tool](https://platform.claude.com/docs
 
 ## Install
 
-Intended one-line install:
-
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
@@ -17,46 +15,18 @@ Intended one-line install:
 }
 ```
 
-> **Status:** opencode 2.0.23 cannot install *any* new package right now
-> (registry and git alike — its bundled npm fails; see
-> [anomalyco/opencode#49704](https://github.com/anomalyco/opencode/issues/49704)).
-> Until that's fixed, use the local install below. It runs the identical
-> code; only the update step differs.
+Restart opencode after adding. Requires opencode v2 (tested on 2.0.23).
 
-### Local install (works today)
+Prerequisites: `npm` must allow git dependencies (npm 12+ blocks them by
+default): `npm config set allow-git all`. Updates are automatic —
+opencode checks unpinned git plugins for updates on startup.
 
-Requirements: `npm` with git dependencies allowed
-(`npm config set allow-git all` — npm 12+ blocks them by default).
+### Update / uninstall
 
-```sh
-# one-time: install from git into a local package dir
-mkdir -p ~/.config/opencode/plugin-packages
-cd ~/.config/opencode/plugin-packages
-npm init -y
-npm install oc-advisor@git+https://github.com/ac5tin/oc-advisor.git
-# expose the entry to opencode's global plugin discovery
-cp node_modules/oc-advisor/.opencode/plugins/oc-advisor.js ~/.config/opencode/plugins/
-```
-
-No `opencode.json` entry needed — files directly under
-`~/.config/opencode/plugins/` load automatically. Restart opencode.
-
-### Update
-
-```sh
-cd ~/.config/opencode/plugin-packages
-npm update oc-advisor
-cp node_modules/oc-advisor/.opencode/plugins/oc-advisor.js ~/.config/opencode/plugins/
-# restart opencode (new plugin files require a restart, not just a reload)
-```
-
-### Uninstall
-
-```sh
-rm ~/.config/opencode/plugins/oc-advisor.js
-# optional: rm -rf ~/.config/opencode/plugin-packages
-# restart opencode
-```
+Updates: restart opencode (it pulls the latest commit for unpinned git
+entries). Pin to a commit with
+`oc-advisor@git+https://github.com/ac5tin/oc-advisor.git#<sha>` to opt
+out. Uninstall: remove the entry and restart.
 
 ## Usage
 
@@ -106,7 +76,7 @@ Static config in `opencode.json` (takes precedence, restart to apply):
 
 ## Behavior
 
-- **Off costs nothing** — with no model selected (or a blocklisted executor), the tool is stripped from the request so its guidance never enters the prompt.
+- **Off costs nothing extra** — with no model selected (or a blocklisted executor), no guidance text is injected. The tool itself stays visible so an accidental call returns instructions instead of failing silently.
 - **Same model twice bills twice** — nothing stops you from setting the advisor to the model you're already driving with. List strong executors in `disabledForModels` to skip the second opinion when it adds no value.
 - **Every failure returns a normal tool result** — the executor reads the text and keeps going: no model configured, misconfigured model, unknown model, unsupported variant, call limit reached, empty response, call error.
 - **Recursion-safe** — the reviewer is invoked with no tools via a stateless side-call.
@@ -125,7 +95,7 @@ Static config in `opencode.json` (takes precedence, restart to apply):
 ```sh
 bun install
 bun test
-bun run build   # regenerates .opencode/plugins/oc-advisor.js (committed)
+bun run bundle  # regenerates .opencode/plugins/oc-advisor.js (committed)
 ```
 
 ## License
