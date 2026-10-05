@@ -1,11 +1,10 @@
-import { Plugin } from "@opencode/plugin";
 import type { Context } from "@opencode/plugin/promise/plugin";
 import { EXECUTOR_GUIDANCE, shouldGuide } from "./advisor";
 import { createAdvisorCommand } from "./command";
 import { readConfig, saveConfig, type AdvisorConfig } from "./config";
 import { createAdvisorTool } from "./tool";
 
-export default Plugin.define({
+export default {
   id: "oc-advisor",
   async setup(ctx: Context) {
     const read = (): Promise<AdvisorConfig> => readConfig(ctx.storage, ctx.options);
@@ -69,7 +68,7 @@ export default Plugin.define({
 
     return () => {};
   },
-});
+};
 
 function toArray(models: unknown): any[] {
   if (Array.isArray(models)) return models as any[];

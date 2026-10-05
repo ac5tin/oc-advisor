@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./.opencode/plugins/oc-advisor.js",
   "scripts": {
-    "build": "bun build src/index.ts --target=node --external '@opencode/plugin' --outfile .opencode/plugins/oc-advisor.js --format esm",
+    "bundle": "bun build src/index.ts --target=node --outfile .opencode/plugins/oc-advisor.js --format esm",
     "test": "bun test"
   },
   "files": [

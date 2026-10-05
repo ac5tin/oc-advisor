@@ -8,6 +8,8 @@ Pattern adapted from Anthropic's [advisor tool](https://platform.claude.com/docs
 
 ## Install
 
+Intended one-line install:
+
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
@@ -15,15 +17,46 @@ Pattern adapted from Anthropic's [advisor tool](https://platform.claude.com/docs
 }
 ```
 
-Restart opencode after adding. Requires opencode v2 (tested on 2.0.23).
+> **Status:** opencode 2.0.23 cannot install *any* new package right now
+> (registry and git alike — its bundled npm fails; see
+> [anomalyco/opencode#49704](https://github.com/anomalyco/opencode/issues/49704)).
+> Until that's fixed, use the local install below. It runs the identical
+> code; only the update step differs.
 
-> **Install notes.** Git-based installs need npm to allow git
-> dependencies (npm 12 blocks them by default):
-> `npm config set allow-git all`. If `opencode plugin add` fails in
-> your environment with `NpmInstallFailedError`, add the entry to
-> `opencode.json` manually and restart — the server installs missing
-> packages in the background. As a fallback, point the entry at a local
-> clone: `"/path/to/oc-advisor/.opencode/plugins"`.
+### Local install (works today)
+
+Requirements: `npm` with git dependencies allowed
+(`npm config set allow-git all` — npm 12+ blocks them by default).
+
+```sh
+# one-time: install from git into a local package dir
+mkdir -p ~/.config/opencode/plugin-packages
+cd ~/.config/opencode/plugin-packages
+npm init -y
+npm install oc-advisor@git+https://github.com/ac5tin/oc-advisor.git
+# expose the entry to opencode's global plugin discovery
+cp node_modules/oc-advisor/.opencode/plugins/oc-advisor.js ~/.config/opencode/plugins/
+```
+
+No `opencode.json` entry needed — files directly under
+`~/.config/opencode/plugins/` load automatically. Restart opencode.
+
+### Update
+
+```sh
+cd ~/.config/opencode/plugin-packages
+npm update oc-advisor
+cp node_modules/oc-advisor/.opencode/plugins/oc-advisor.js ~/.config/opencode/plugins/
+# restart opencode (new plugin files require a restart, not just a reload)
+```
+
+### Uninstall
+
+```sh
+rm ~/.config/opencode/plugins/oc-advisor.js
+# optional: rm -rf ~/.config/opencode/plugin-packages
+# restart opencode
+```
 
 ## Usage
 

@@ -1,6 +1,3 @@
-// src/index.ts
-import { Plugin } from "@opencode/plugin";
-
 // src/advisor.ts
 function parseModelRef(raw) {
   const text = raw.trim();
@@ -324,7 +321,7 @@ function createAdvisorTool(host) {
 }
 
 // src/index.ts
-var src_default = Plugin.define({
+var src_default = {
   id: "oc-advisor",
   async setup(ctx) {
     const read = () => readConfig(ctx.storage, ctx.options);
@@ -369,7 +366,7 @@ var src_default = Plugin.define({
     });
     return () => {};
   }
-});
+};
 function toArray2(models) {
   if (Array.isArray(models))
     return models;
