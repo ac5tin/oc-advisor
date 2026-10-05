@@ -188,47 +188,6 @@ You read the shared conversation context and return ONE of:
 
 You NEVER call tools. You NEVER produce user-facing output. Be concise, directive, and grounded in the shared context. Name files, functions, and line numbers where possible. No preamble, no apologies, no meta-commentary about being an advisor — just the guidance the executor needs.`;
 
-// src/config.ts
-var DEFAULT_CONFIG = { model: undefined, disabledForModels: [], maxUses: 0 };
-function sanitizeOptions(raw) {
-  const out = { ...DEFAULT_CONFIG, disabledForModels: [] };
-  if (!raw || typeof raw !== "object")
-    return out;
-  if (typeof raw.model === "string" && parseModelRef(raw.model))
-    out.model = raw.model.trim();
-  if (Array.isArray(raw.disabledForModels)) {
-    out.disabledForModels = raw.disabledForModels.filter((e) => typeof e === "string" && parseModelRef(e) !== null);
-  }
-  if (typeof raw.maxUses === "number" && Number.isFinite(raw.maxUses) && raw.maxUses > 0) {
-    out.maxUses = Math.floor(raw.maxUses);
-  }
-  return out;
-}
-function sanitizeStored(raw) {
-  if (!raw || typeof raw !== "object")
-    return {};
-  return sanitizeOptions(raw);
-}
-async function resolveConfig(storage) {
-  const stored = sanitizeStored(await storage.get("config"));
-  return { ...DEFAULT_CONFIG, ...stored };
-}
-function applyOptions(base, raw) {
-  const opts = sanitizeOptions(raw);
-  const out = { ...base };
-  if (opts.model !== undefined)
-    out.model = opts.model;
-  if (raw && typeof raw === "object" && Array.isArray(raw.disabledForModels)) {
-    out.disabledForModels = opts.disabledForModels;
-  }
-  if (opts.maxUses > 0)
-    out.maxUses = opts.maxUses;
-  return out;
-}
-async function saveConfig(storage, config) {
-  await storage.set("config", config);
-}
-
 // src/command.ts
 function toArray(models) {
   if (Array.isArray(models))
@@ -280,9 +239,141 @@ function createAdvisorCommand(host) {
   };
 }
 
+// src/config.ts
+var DEFAULT_CONFIG = { model: undefined, disabledForModels: [], maxUses: 0 };
+function sanitizeOptions(raw) {
+  const out = { ...DEFAULT_CONFIG, disabledForModels: [] };
+  if (!raw || typeof raw !== "object")
+    return out;
+  if (typeof raw.model === "string" && parseModelRef(raw.model))
+    out.model = raw.model.trim();
+  if (Array.isArray(raw.disabledForModels)) {
+    out.disabledForModels = raw.disabledForModels.filter((e) => typeof e === "string" && parseModelRef(e) !== null);
+  }
+  if (typeof raw.maxUses === "number" && Number.isFinite(raw.maxUses) && raw.maxUses > 0) {
+    out.maxUses = Math.floor(raw.maxUses);
+  }
+  return out;
+}
+function sanitizeStored(raw) {
+  if (!raw || typeof raw !== "object")
+    return {};
+  return sanitizeOptions(raw);
+}
+async function resolveConfig(storage) {
+  const stored = sanitizeStored(await storage.get("config"));
+  return { ...DEFAULT_CONFIG, ...stored };
+}
+function applyOptions(base, raw) {
+  const opts = sanitizeOptions(raw);
+  const out = { ...base };
+  if (opts.model !== undefined)
+    out.model = opts.model;
+  if (raw && typeof raw === "object" && Array.isArray(raw.disabledForModels)) {
+    out.disabledForModels = opts.disabledForModels;
+  }
+  if (opts.maxUses > 0)
+    out.maxUses = opts.maxUses;
+  return out;
+}
+async function saveConfig(storage, config) {
+  await storage.set("config", config);
+}
+async function readConfig(storage, options) {
+  return applyOptions(await resolveConfig(storage), options);
+}
+
+// src/tool.ts
+var SHORT_DESCRIPTION = "Escalate to a stronger reviewer model for guidance. Takes NO parameters — your entire conversation is forwarded automatically. Call BEFORE substantive work, when stuck, or before declaring done.";
+function createAdvisorTool(host) {
+  const uses = new Map;
+  return {
+    definition: {
+      name: "advisor",
+      description: SHORT_DESCRIPTION,
+      input: { type: "object", properties: {}, additionalProperties: false },
+      execute: async (_input, context) => {
+        const config = await host.loadConfig();
+        if (!config.model) {
+          return { content: "No advisor model is configured. The user can enable one with the /advisor command." };
+        }
+        const ref = parseModelRef(config.model);
+        if (!ref) {
+          return { content: `Advisor model is misconfigured: ${config.model}. Fix it with /advisor.` };
+        }
+        const used = uses.get(context.sessionID) ?? 0;
+        if (maxUsesExceeded(used, config.maxUses)) {
+          return { content: "Advisor call limit reached (max_uses_exceeded). Continuing without further advice." };
+        }
+        uses.set(context.sessionID, used + 1);
+        try {
+          const text = await runAdvisorCall(host, { sessionID: context.sessionID, callId: context.id, ref, signal: context.signal });
+          return { content: text };
+        } catch (e) {
+          return { content: e instanceof AdvisorError ? e.message : `Advisor call failed: ${e instanceof Error ? e.message : String(e)}` };
+        }
+      }
+    },
+    resetUses(sessionID) {
+      uses.set(sessionID, 0);
+    }
+  };
+}
+
 // src/index.ts
 var ADVISOR_TOOL = "advisor";
-var SHORT_DESCRIPTION = "Escalate to a stronger reviewer model for guidance. Takes NO parameters — your entire conversation is forwarded automatically. Call BEFORE substantive work, when stuck, or before declaring done.";
+var src_default = Plugin.define({
+  id: "oc-advisor",
+  async setup(ctx) {
+    const read = () => readConfig(ctx.storage, ctx.options);
+    const executorKey = (model) => `${model?.providerID}/${model?.id}`;
+    const advisorActive = async (model) => {
+      const config = await read();
+      return config.model !== undefined && !isDisabledModel(executorKey(model), config.disabledForModels);
+    };
+    const advisor = createAdvisorTool({
+      loadConfig: read,
+      readContext: async (sessionID) => ctx.session.context({ sessionID }),
+      listToolNames: async () => toArray2(await ctx.tool.list()).map((t) => t.id ?? t.name).filter((n) => typeof n === "string"),
+      generateText: async (model, prompt, opts) => {
+        const result = await ctx.generate.text({
+          model: {
+            providerID: model.providerID,
+            id: model.id,
+            ...model.variant ? { variant: model.variant } : {}
+          },
+          prompt
+        }, opts?.signal ? { signal: opts.signal } : undefined);
+        return result?.text ?? "";
+      }
+    });
+    await ctx.tool.transform((editor) => {
+      editor.add(advisor.definition);
+    });
+    await ctx.command.transform((editor) => {
+      editor.add(createAdvisorCommand({
+        load: read,
+        save: async (c) => saveConfig(ctx.storage, c),
+        listModels: async () => ctx.model.list(),
+        prompt: async (input) => ctx.session.prompt(input)
+      }));
+    });
+    await ctx.session.hook("prompt", async (event) => {
+      advisor.resetUses(event.sessionID);
+    });
+    await ctx.session.hook("context", async (event) => {
+      try {
+        if (!await advisorActive(event.model)) {
+          if (event.tools)
+            delete event.tools[ADVISOR_TOOL];
+          return;
+        }
+        event.system.push({ type: "text", text: EXECUTOR_GUIDANCE });
+      } catch {}
+    });
+    return () => {};
+  }
+});
 function toArray2(models) {
   if (Array.isArray(models))
     return models;
@@ -293,87 +384,6 @@ function toArray2(models) {
     return obj.models;
   return Object.values(obj);
 }
-function errText(e) {
-  return e instanceof Error ? e.message : String(e);
-}
-var src_default = Plugin.define({
-  id: "oc-advisor",
-  async setup(ctx) {
-    let current = applyOptions(await resolveConfig(ctx.storage), ctx.options);
-    const uses = new Map;
-    const executorKey = (model) => `${model?.providerID}/${model?.id}`;
-    const advisorActive = (model) => current.model !== undefined && !isDisabledModel(executorKey(model), current.disabledForModels);
-    await ctx.tool.transform((editor) => {
-      editor.add({
-        name: ADVISOR_TOOL,
-        description: SHORT_DESCRIPTION,
-        input: { type: "object", properties: {}, additionalProperties: false },
-        execute: async (_input, context) => {
-          const sessionID = context.sessionID;
-          if (!current.model) {
-            return { content: "No advisor model is configured. The user can enable one with the /advisor command." };
-          }
-          const ref = parseModelRef(current.model);
-          if (!ref) {
-            return { content: `Advisor model is misconfigured: ${current.model}. Fix it with /advisor.` };
-          }
-          const used = uses.get(sessionID) ?? 0;
-          if (maxUsesExceeded(used, current.maxUses)) {
-            return { content: "Advisor call limit reached (max_uses_exceeded). Continuing without further advice." };
-          }
-          uses.set(sessionID, used + 1);
-          try {
-            const text = await runAdvisorCall({
-              readContext: async (id) => ctx.session.context({ sessionID: id }),
-              listToolNames: async () => toArray2(await ctx.tool.list()).map((t) => t.id ?? t.name).filter((n) => typeof n === "string"),
-              generateText: async (model, prompt, opts) => {
-                const result = await ctx.generate.text({
-                  model: {
-                    providerID: model.providerID,
-                    id: model.id,
-                    ...model.variant ? { variant: model.variant } : {}
-                  },
-                  prompt
-                }, opts?.signal ? { signal: opts.signal } : undefined);
-                return result?.text ?? "";
-              }
-            }, { sessionID, callId: context.id, ref, signal: context.signal });
-            return { content: text };
-          } catch (e) {
-            return { content: e instanceof AdvisorError ? e.message : `Advisor call failed: ${errText(e)}` };
-          }
-        }
-      });
-    });
-    await ctx.command.transform((editor) => {
-      editor.add(createAdvisorCommand({
-        load: async () => current,
-        save: async (c) => {
-          current = c;
-          await saveConfig(ctx.storage, c);
-        },
-        listModels: async () => ctx.model.list(),
-        prompt: async (input) => ctx.session.prompt(input)
-      }));
-    });
-    await ctx.session.hook("prompt", async (event) => {
-      uses.set(event.sessionID, 0);
-    });
-    await ctx.session.hook("context", async (event) => {
-      try {
-        if (!advisorActive(event.model)) {
-          if (event.tools)
-            delete event.tools[ADVISOR_TOOL];
-          return;
-        }
-        event.system.push({ type: "text", text: EXECUTOR_GUIDANCE });
-      } catch {}
-    });
-    return () => {
-      uses.clear();
-    };
-  }
-});
 export {
   src_default as default
 };

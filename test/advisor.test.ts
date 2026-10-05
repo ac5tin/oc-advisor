@@ -13,6 +13,71 @@ import {
 } from "../src/advisor";
 import { sanitizeOptions } from "../src/config";
 import { createAdvisorCommand } from "../src/command";
+import { createAdvisorTool } from "../src/tool";
+import { applyOptions, readConfig, resolveConfig } from "../src/config";
+
+describe("advisor tool gating", () => {
+  const branch = [{ id: "m1", type: "user", text: "go" }];
+  const host = (config: unknown, used = 0) => {
+    let calls = used;
+    const h = {
+      loadConfig: async () => config,
+      readContext: async () => branch,
+      listToolNames: async () => ["advisor"],
+      generateText: async () => "guidance",
+      _calls: () => calls,
+      _use: () => {
+        calls += 1;
+      },
+    };
+    return h;
+  };
+
+  test("no model configured", async () => {
+    const t = createAdvisorTool(host({ model: undefined, disabledForModels: [], maxUses: 0 }) as any);
+    const r = await t.definition.execute({}, { sessionID: "s", id: "c" });
+    expect(r.content).toContain("No advisor model");
+  });
+
+  test("misconfigured model", async () => {
+    const t = createAdvisorTool(host({ model: "nope", disabledForModels: [], maxUses: 0 }) as any);
+    const r = await t.definition.execute({}, { sessionID: "s", id: "c" });
+    expect(r.content).toContain("misconfigured");
+  });
+
+  test("maxUses enforced then reset", async () => {
+    const h = host({ model: "p/m", disabledForModels: [], maxUses: 1 });
+    const t = createAdvisorTool(h as any);
+    const ok = await t.definition.execute({}, { sessionID: "s", id: "c1" });
+    expect(ok.content).toBe("guidance");
+    const capped = await t.definition.execute({}, { sessionID: "s", id: "c2" });
+    expect(capped.content).toContain("max_uses_exceeded");
+    t.resetUses("s");
+    const again = await t.definition.execute({}, { sessionID: "s", id: "c3" });
+    expect(again.content).toBe("guidance");
+  });
+});
+
+describe("readConfig", () => {
+  test("a write between two reads is visible on the second read", async () => {
+    const store = new Map<string, unknown>();
+    const storage = {
+      get: async (k: string) => store.get(k),
+      set: async (k: string, v: unknown) => {
+        store.set(k, v);
+      },
+    };
+    expect((await readConfig(storage, undefined)).model).toBeUndefined();
+    store.set("config", { model: "xai/grok-4.7#xhigh", disabledForModels: [], maxUses: 0 });
+    expect((await readConfig(storage, undefined)).model).toBe("xai/grok-4.7#xhigh");
+  });
+
+  test("options override stored values on every read", async () => {
+    const storage = { get: async () => ({ model: "a/b", disabledForModels: [], maxUses: 0 }) };
+    const cfg = await readConfig(storage, { model: "c/d#high" });
+    expect(cfg.model).toBe("c/d#high");
+  });
+});
 
 describe("parseModelRef", () => {
   test("splits provider, model with slashes, and variant", () => {

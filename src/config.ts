@@ -63,3 +63,11 @@ export async function saveConfig(
 ): Promise<void> {
   await storage.set("config", config);
 }
+
+/** Fresh read on every call: stored selection with static options overlaid. Never cached. */
+export async function readConfig(
+  storage: { get(key: string): Promise<unknown> },
+  options: RawOptions | undefined,
+): Promise<AdvisorConfig> {
+  return applyOptions(await resolveConfig(storage), options);
+}
