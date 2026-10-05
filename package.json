@@ -1,0 +1,24 @@
+{
+  "name": "oc-advisor",
+  "version": "0.1.0",
+  "description": "Advisor-strategy plugin for opencode: fast executor, strong reviewer one call away",
+  "type": "module",
+  "main": "./.opencode/plugins/oc-advisor.mjs",
+  "exports": {
+    ".": "./.opencode/plugins/oc-advisor.mjs"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --external '@opencode/plugin' --outfile .opencode/plugins/oc-advisor.mjs --format esm",
+    "test": "bun test"
+  },
+  "files": [
+    ".opencode/",
+    "src/",
+    "prompts/"
+  ],
+  "keywords": ["opencode-plugin", "opencode", "advisor"],
+  "dependencies": {
+    "@opencode/plugin": "2.0.23"
+  },
+  "license": "MIT"
+}
