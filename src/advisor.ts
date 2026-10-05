@@ -34,6 +34,14 @@ export function isDisabledModel(executorRef: string, disabledForModels: readonly
   return disabledForModels.some((entry) => canonicalKey(entry) === key);
 }
 
+/** True when guidance should be injected: a model is set and the executor isn't blocklisted. */
+export function shouldGuide(
+  config: { model?: string; disabledForModels: readonly string[] },
+  executorRef: string,
+): boolean {
+  return config.model !== undefined && !isDisabledModel(executorRef, config.disabledForModels);
+}
+
 /** Absent or zero maxUses means unlimited. */
 export function maxUsesExceeded(used: number, maxUses: number | undefined): boolean {
   if (maxUses === undefined || maxUses <= 0) return false;

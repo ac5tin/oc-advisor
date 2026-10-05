@@ -4,9 +4,6 @@
   "description": "Advisor-strategy plugin for opencode: fast executor, strong reviewer one call away",
   "type": "module",
   "main": "./.opencode/plugins/oc-advisor.js",
-  "exports": {
-    ".": "./.opencode/plugins/oc-advisor.js"
-  },
   "scripts": {
     "build": "bun build src/index.ts --target=node --external '@opencode/plugin' --outfile .opencode/plugins/oc-advisor.js --format esm",
     "test": "bun test"
@@ -16,7 +13,7 @@
     "src/"
   ],
   "keywords": ["opencode-plugin", "opencode", "advisor"],
-  "dependencies": {
+  "devDependencies": {
     "@opencode/plugin": "2.0.23"
   },
   "license": "MIT"

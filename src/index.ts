@@ -1,21 +1,15 @@
 import { Plugin } from "@opencode/plugin";
 import type { Context } from "@opencode/plugin/promise/plugin";
-import { EXECUTOR_GUIDANCE, isDisabledModel } from "./advisor";
+import { EXECUTOR_GUIDANCE, shouldGuide } from "./advisor";
 import { createAdvisorCommand } from "./command";
 import { readConfig, saveConfig, type AdvisorConfig } from "./config";
 import { createAdvisorTool } from "./tool";
-
-const ADVISOR_TOOL = "advisor";
 
 export default Plugin.define({
   id: "oc-advisor",
   async setup(ctx: Context) {
     const read = (): Promise<AdvisorConfig> => readConfig(ctx.storage, ctx.options);
     const executorKey = (model: any) => `${model?.providerID}/${model?.id}`;
-    const advisorActive = async (model: any): Promise<boolean> => {
-      const config = await read();
-      return config.model !== undefined && !isDisabledModel(executorKey(model), config.disabledForModels);
-    };
 
     const advisor = createAdvisorTool({
       loadConfig: read,
@@ -62,10 +56,11 @@ export default Plugin.define({
 
     await ctx.session.hook("context", async (event) => {
       try {
-        if (!(await advisorActive((event as any).model))) {
-          if ((event as any).tools) delete (event as any).tools[ADVISOR_TOOL];
-          return;
-        }
+        // Tool stays visible always: an unconfigured call returns guidance
+        // telling the executor to run /advisor. Only the guidance injection
+        // is gated here.
+        const config = await read();
+        if (!shouldGuide(config, executorKey((event as any).model))) return;
         (event as any).system.push({ type: "text", text: EXECUTOR_GUIDANCE });
       } catch {
         // Never break the agent loop from a guidance hook.

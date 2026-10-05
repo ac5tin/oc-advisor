@@ -28,6 +28,9 @@ function isDisabledModel(executorRef, disabledForModels) {
   const key = canonicalKey(executorRef);
   return disabledForModels.some((entry) => canonicalKey(entry) === key);
 }
+function shouldGuide(config, executorRef) {
+  return config.model !== undefined && !isDisabledModel(executorRef, config.disabledForModels);
+}
 function maxUsesExceeded(used, maxUses) {
   if (maxUses === undefined || maxUses <= 0)
     return false;
@@ -321,16 +324,11 @@ function createAdvisorTool(host) {
 }
 
 // src/index.ts
-var ADVISOR_TOOL = "advisor";
 var src_default = Plugin.define({
   id: "oc-advisor",
   async setup(ctx) {
     const read = () => readConfig(ctx.storage, ctx.options);
     const executorKey = (model) => `${model?.providerID}/${model?.id}`;
-    const advisorActive = async (model) => {
-      const config = await read();
-      return config.model !== undefined && !isDisabledModel(executorKey(model), config.disabledForModels);
-    };
     const advisor = createAdvisorTool({
       loadConfig: read,
       readContext: async (sessionID) => ctx.session.context({ sessionID }),
@@ -363,11 +361,9 @@ var src_default = Plugin.define({
     });
     await ctx.session.hook("context", async (event) => {
       try {
-        if (!await advisorActive(event.model)) {
-          if (event.tools)
-            delete event.tools[ADVISOR_TOOL];
+        const config = await read();
+        if (!shouldGuide(config, executorKey(event.model)))
           return;
-        }
         event.system.push({ type: "text", text: EXECUTOR_GUIDANCE });
       } catch {}
     });

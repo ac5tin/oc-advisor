@@ -13,6 +13,15 @@ import {
 } from "../src/advisor";
 import { sanitizeOptions } from "../src/config";
 import { createAdvisorCommand } from "../src/command";
+import { shouldGuide } from "../src/advisor";
+
+describe("shouldGuide", () => {
+  test("false when unconfigured, true when set, false when blocklisted", () => {
+    expect(shouldGuide({ model: undefined, disabledForModels: [], maxUses: 0 }, "a/b")).toBe(false);
+    expect(shouldGuide({ model: "x/y", disabledForModels: [], maxUses: 0 }, "a/b")).toBe(true);
+    expect(shouldGuide({ model: "x/y", disabledForModels: ["a/b"], maxUses: 0 }, "a/b")).toBe(false);
+  });
+});
 import { createAdvisorTool } from "../src/tool";
 import { applyOptions, readConfig, resolveConfig } from "../src/config";
 
