@@ -292,6 +292,7 @@ function createAdvisorTool(host) {
       name: "advisor",
       description: SHORT_DESCRIPTION,
       input: { type: "object", properties: {}, additionalProperties: false },
+      options: { codemode: false },
       execute: async (_input, context) => {
         const config = await host.loadConfig();
         if (!config.model) {

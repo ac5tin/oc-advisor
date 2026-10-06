@@ -16,6 +16,7 @@ export interface AdvisorTool {
     name: string;
     description: string;
     input: { type: string; properties: Record<string, never>; additionalProperties: boolean };
+    options?: { codemode?: boolean };
     execute(input: unknown, context: { sessionID: string; id: string; signal?: AbortSignal }): Promise<{ content: string }>;
   };
   resetUses(sessionID: string): void;
@@ -30,6 +31,7 @@ export function createAdvisorTool(host: ToolHost): AdvisorTool {
       name: "advisor",
       description: SHORT_DESCRIPTION,
       input: { type: "object", properties: {}, additionalProperties: false },
+      options: { codemode: false },
       execute: async (_input: unknown, context: { sessionID: string; id: string; signal?: AbortSignal }) => {
         const config = await host.loadConfig();
         if (!config.model) {
