@@ -1,5 +1,6 @@
 import { parseAdvisorArgs, parseModelRef } from "./advisor";
 import type { AdvisorConfig } from "./config";
+import type { PushConfig } from "./push";
 
 function toArray(models: unknown): any[] {
   if (Array.isArray(models)) return models as any[];
@@ -22,19 +23,50 @@ export interface AdvisorCommand {
   execute(input: { sessionID: string; prompt: { text?: string }; delivery: unknown }): Promise<void>;
 }
 
-/** /advisor command with injectable host: show | set provider/model[#variant] | off. */
+function describePush(push: PushConfig, projectNotes: boolean): string {
+  return [
+    `Push mode: ${push.mode}`,
+    `(min severity: ${push.minSeverity}, cooldown: ${push.cooldownTurns} agent-end runs,`,
+    `max per prompt: ${push.maxPerPrompt}, project notes: ${projectNotes ? "on" : "off"}).`,
+    "See docs/push-mode.md for what each setting does.",
+  ].join(" ");
+}
+
+/** /advisor command with injectable host: show | set provider/model[#variant] | off | push … | notes on|off. */
 export function createAdvisorCommand(host: CommandHost): AdvisorCommand {
   return {
     name: "advisor",
-    description: "Select the advisor reviewer model: /advisor provider/model[#variant], /advisor off",
+    description: "Advisor reviewer: /advisor provider/model[#variant] | off | push [off|agent-end|min|cooldown|max] | notes on|off",
     execute: async ({ sessionID, prompt, delivery }) => {
       const reply = (text: string) => host.prompt({ sessionID, text, delivery });
       const config = await host.load();
       const arg = parseAdvisorArgs(prompt?.text ?? "");
+      if (arg.action === "invalid") {
+        await reply(arg.message);
+        return;
+      }
+      if (arg.action === "push-show") {
+        await reply(describePush(config.push, config.projectNotes));
+        return;
+      }
+      if (arg.action === "push-set") {
+        const push = { ...config.push, ...arg.patch };
+        await host.save({ ...config, push });
+        const summary = arg.patch.mode !== undefined
+          ? `Push mode set to ${push.mode}.`
+          : "Push setting updated.";
+        await reply(`${summary} ${describePush(push, config.projectNotes)}`);
+        return;
+      }
+      if (arg.action === "notes") {
+        await host.save({ ...config, projectNotes: arg.on });
+        await reply(`Project notes ${arg.on ? "on" : "off"}: reads .opencode/advisor.md in the project when enabled.`);
+        return;
+      }
       if (arg.action === "show") {
         await reply(
           config.model
-            ? `Advisor: ${config.model}${config.maxUses > 0 ? ` (max ${config.maxUses} calls per request)` : ""}`
+            ? `Advisor: ${config.model}${config.maxUses > 0 ? ` (max ${config.maxUses} calls per request)` : ""}. Push mode: ${config.push.mode}.`
             : "Advisor: off. Set one with /advisor provider/model[#variant], e.g. /advisor anthropic/claude-opus-4-6#high",
         );
         return;

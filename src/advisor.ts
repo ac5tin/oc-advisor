@@ -1,5 +1,6 @@
 // Pure advisor-strategy helpers: parsing, matching, prompt building.
 // No opencode APIs here so every function is unit-testable without mocks.
+import { isAdvisorNote, PUSH_INSTRUCTIONS, type PushConfig } from "./push";
 
 export interface ModelRef {
   providerID: string;
@@ -64,14 +65,47 @@ export function maxUsesExceeded(used: number, maxUses: number | undefined): bool
   return used >= maxUses;
 }
 
-export type AdvisorArg = { action: "show" } | { action: "off" } | { action: "set"; model: string };
+export type AdvisorArg =
+  | { action: "show" }
+  | { action: "off" }
+  | { action: "set"; model: string }
+  | { action: "push-show" }
+  | { action: "push-set"; patch: Partial<PushConfig> }
+  | { action: "notes"; on: boolean }
+  | { action: "invalid"; message: string };
 
-/** Parse "/advisor [provider/model[#variant] | off]". */
+const PUSH_USAGE =
+  "Usage: /advisor push [off | agent-end | min nit|concern|blocker | cooldown N | max N]";
+
+/** Parse "/advisor [provider/model[#variant] | off | push … | notes on|off]". */
 export function parseAdvisorArgs(text: string): AdvisorArg {
   const rest = text.replace(/^\s*\/advisor\b\s*/, "").trim();
   if (!rest) return { action: "show" };
   if (rest.toLowerCase() === "off") return { action: "off" };
+  const [head, ...args] = rest.split(/\s+/);
+  if (head.toLowerCase() === "push") return parsePushArgs(args);
+  if (head.toLowerCase() === "notes") {
+    const value = args[0]?.toLowerCase();
+    if (value === "on" || value === "off") return { action: "notes", on: value === "on" };
+    return { action: "invalid", message: "Usage: /advisor notes on|off" };
+  }
   return { action: "set", model: rest };
+}
+
+function parsePushArgs(args: string[]): AdvisorArg {
+  if (args.length === 0) return { action: "push-show" };
+  const [key, value] = [args[0].toLowerCase(), args[1]];
+  if (args.length === 1 && (key === "off" || key === "agent-end")) {
+    return { action: "push-set", patch: { mode: key } };
+  }
+  if (args.length === 2 && key === "min" && (value === "nit" || value === "concern" || value === "blocker")) {
+    return { action: "push-set", patch: { minSeverity: value } };
+  }
+  if (args.length === 2 && (key === "cooldown" || key === "max") && /^\d+$/.test(value)) {
+    const n = Number(value);
+    return { action: "push-set", patch: key === "cooldown" ? { cooldownTurns: n } : { maxPerPrompt: n } };
+  }
+  return { action: "invalid", message: PUSH_USAGE };
 }
 
 export interface BranchPart {
@@ -121,6 +155,7 @@ export interface AdvisorCallDeps {
   generateText(model: ModelRef, prompt: string, opts?: { signal?: AbortSignal }): Promise<string>;
   readRequest?(sessionID: string): RequestSnapshot | undefined;
   contextLimit?(model: ModelRef): Promise<number | undefined>;
+  readProjectNotes?(): Promise<string | undefined>;
 }
 
 async function contextLimitOf(deps: AdvisorCallDeps, ref: ModelRef): Promise<number | undefined> {
@@ -131,11 +166,25 @@ async function contextLimitOf(deps: AdvisorCallDeps, ref: ModelRef): Promise<num
   }
 }
 
+async function projectNotesOf(deps: AdvisorCallDeps): Promise<string | undefined> {
+  try {
+    return (await deps.readProjectNotes?.())?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface AdvisorCallInput {
+  sessionID: string;
+  callId?: string;
+  ref: ModelRef;
+  signal?: AbortSignal;
+  /** Set for push mode: asks for a tagged note and lists advice already given. */
+  push?: { alreadyRaised: string[] };
+}
+
 /** Build the reviewer prompt and run one side-call. Throws AdvisorError with user-facing text on failure. */
-export async function runAdvisorCall(
-  deps: AdvisorCallDeps,
-  input: { sessionID: string; callId: string; ref: ModelRef; signal?: AbortSignal },
-): Promise<string> {
+export async function runAdvisorCall(deps: AdvisorCallDeps, input: AdvisorCallInput): Promise<string> {
   const messages = await deps.readContext(input.sessionID).catch((e: unknown) => {
     throw new AdvisorError(`could not read session context: ${e instanceof Error ? e.message : String(e)}`);
   });
@@ -147,8 +196,13 @@ export async function runAdvisorCall(
     system: snapshot?.system,
     budgetChars: reviewBudgetChars(await contextLimitOf(deps, input.ref)),
   });
+  const notes = await projectNotesOf(deps);
+  const system = notes ? `${ADVISOR_SYSTEM_PROMPT}\n\n## Project advisor notes\n${notes}` : ADVISOR_SYSTEM_PROMPT;
+  const push = input.push
+    ? `\n\n${PUSH_INSTRUCTIONS}\n\n"already raised" (do not repeat):\n${input.push.alreadyRaised.map((n) => `- ${n}`).join("\n") || "- (none)"}`
+    : "";
   const text = await deps
-    .generateText(input.ref, `${ADVISOR_SYSTEM_PROMPT}\n\n${branch}`, { signal: input.signal })
+    .generateText(input.ref, `${system}\n\n${branch}${push}`, { signal: input.signal })
     .catch((e: unknown) => {
       throw new AdvisorError(`Advisor call failed: ${e instanceof Error ? e.message : String(e)}`);
     });
@@ -208,6 +262,7 @@ function toolIO(part: any): { input?: string; result?: string } {
 function renderMessage(msg: BranchMessage, inflightCallId: string | undefined, cap: number): string | null {
   if (msg.type === "user" || msg.type === "synthetic") {
     if (!msg.text) return null;
+    if (msg.type === "synthetic" && isAdvisorNote(msg.text)) return null;
     return `## ${msg.type}:\n${msg.text}`;
   }
   const parts = (msg.content ?? []).filter((p) => inflightCallId === undefined || p.id !== inflightCallId);

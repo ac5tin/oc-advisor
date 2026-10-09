@@ -41,6 +41,9 @@ Other forms:
 ```
 /advisor            # show current selection
 /advisor off        # disable
+/advisor push       # show push mode (off by default)
+/advisor push agent-end   # let the reviewer post notes after finished runs
+/advisor notes on   # read .opencode/advisor.md as reviewer priorities
 ```
 
 The `advisor` tool takes no parameters — when the executor calls `advisor()`, the conversation history is forwarded automatically: the task, every tool call made, every result seen. The reviewer also gets the executor's system prompt and tool definitions from its last model call. Transcripts are sent whole unless they exceed the reviewer's context budget (about 60% of its window); then long tool results are elided, and if still too large the oldest turns are dropped after the task. That whole payload is billed against the reviewer model on every call, so escalations are not free.
@@ -71,12 +74,15 @@ Static config in `opencode.json` (takes precedence, restart to apply):
 | `model` | Reviewer model as `provider/model[#variant]`. Persisted by `/advisor`. | unset — advisor off |
 | `disabledForModels` | Executor models the tool is hidden for. Entries are `"provider/model"` (any effort) or `{ "model": "provider/model", "minEffort": "high" }` (only at or above that effort, read from the executor's `#variant`). | `[]` |
 | `maxUses` | Cap advisor calls per user request. `0` or unset = unlimited. Counter resets on each new prompt. | `0` |
+| `push` | Push mode: `{ "mode": "off" \| "agent-end", "minSeverity": "nit" \| "concern" \| "blocker", "cooldownTurns": 3, "maxPerPrompt": 2 }`. The reviewer may post a note after a finished run. See [docs/push-mode.md](./docs/push-mode.md). | `{ "mode": "off", … }` |
+| `projectNotes` | Read `.opencode/advisor.md` as reviewer priorities. | `false` |
 
 `/advisor` persists `model` to plugin storage; static `options` override stored values when present.
 
 ## Behavior
 
 - **Off costs nothing extra** — with no model selected (or a blocklisted executor), the tool is removed from that request and no guidance text is injected, as in Claude Code.
+- **Push mode is opt-in** — with `/advisor push agent-end` the reviewer also reviews each finished run and may post one labelled note. Off by default. Every setting, the recommended configs and the limits are in [docs/push-mode.md](./docs/push-mode.md).
 - **Same model twice bills twice** — nothing stops you from setting the advisor to the model you're already driving with. List strong executors in `disabledForModels` to skip the second opinion when it adds no value.
 - **Every failure returns a normal tool result** — the executor reads the text and keeps going: no model configured, misconfigured model, unknown model, unsupported variant, call limit reached, empty response, call error.
 - **Recursion-safe** — the reviewer is invoked with no tools via a stateless side-call.

@@ -11,6 +11,7 @@ export interface ToolHost {
   generateText(model: ModelRef, prompt: string, opts?: { signal?: AbortSignal }): Promise<string>;
   readRequest?(sessionID: string): RequestSnapshot | undefined;
   contextLimit?(model: ModelRef): Promise<number | undefined>;
+  readProjectNotes?(): Promise<string | undefined>;
 }
 
 export interface AdvisorTool {
@@ -22,6 +23,9 @@ export interface AdvisorTool {
     execute(input: unknown, context: { sessionID: string; id: string; signal?: AbortSignal }): Promise<{ content: string }>;
   };
   resetUses(sessionID: string): void;
+  forget(sessionID: string): void;
+  /** Push-mode review: returns the raw reviewer reply. Does not count toward maxUses. */
+  review(sessionID: string, ref: ModelRef, alreadyRaised: string[]): Promise<string>;
 }
 
 /** Advisor tool with injectable host. Use counter resets on each new user prompt. */
@@ -29,6 +33,9 @@ export function createAdvisorTool(host: ToolHost): AdvisorTool {
   const uses = new Map<string, number>();
 
   return {
+    review(sessionID, ref, alreadyRaised) {
+      return runAdvisorCall(host, { sessionID, ref, push: { alreadyRaised } });
+    },
     definition: {
       name: "advisor",
       description: SHORT_DESCRIPTION,
@@ -58,6 +65,9 @@ export function createAdvisorTool(host: ToolHost): AdvisorTool {
     },
     resetUses(sessionID: string) {
       uses.set(sessionID, 0);
+    },
+    forget(sessionID: string) {
+      uses.delete(sessionID);
     },
   };
 }

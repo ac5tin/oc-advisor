@@ -1,9 +1,12 @@
 import { EFFORT_LEVELS, parseModelRef, type DisabledEntry } from "./advisor";
+import { DEFAULT_PUSH, type PushConfig } from "./push";
 
 export interface AdvisorConfig {
   model?: string;
   disabledForModels: DisabledEntry[];
   maxUses: number;
+  push: PushConfig;
+  projectNotes: boolean;
 }
 
 function isDisabledEntry(entry: unknown): entry is DisabledEntry {
@@ -17,17 +20,46 @@ function isDisabledEntry(entry: unknown): entry is DisabledEntry {
   );
 }
 
-export const DEFAULT_CONFIG: AdvisorConfig = { model: undefined, disabledForModels: [], maxUses: 0 };
+export const DEFAULT_CONFIG: AdvisorConfig = {
+  model: undefined,
+  disabledForModels: [],
+  maxUses: 0,
+  push: DEFAULT_PUSH,
+  projectNotes: false,
+};
 
 export interface RawOptions {
   model?: unknown;
   disabledForModels?: unknown;
   maxUses?: unknown;
+  push?: unknown;
+  projectNotes?: unknown;
+}
+
+const PUSH_MODES = ["off", "agent-end"] as const;
+const SEVERITIES = ["nit", "concern", "blocker"] as const;
+
+/** Only the push keys that are present and valid; absent keys are left out. */
+export function sanitizePush(raw: unknown): Partial<PushConfig> {
+  if (!raw || typeof raw !== "object") return {};
+  const r = raw as Record<string, unknown>;
+  const out: Partial<PushConfig> = {};
+  if (PUSH_MODES.includes(r.mode as (typeof PUSH_MODES)[number])) out.mode = r.mode as PushConfig["mode"];
+  if (SEVERITIES.includes(r.minSeverity as (typeof SEVERITIES)[number])) {
+    out.minSeverity = r.minSeverity as PushConfig["minSeverity"];
+  }
+  if (isNonNegativeInt(r.cooldownTurns)) out.cooldownTurns = r.cooldownTurns;
+  if (isNonNegativeInt(r.maxPerPrompt)) out.maxPerPrompt = r.maxPerPrompt;
+  return out;
+}
+
+function isNonNegativeInt(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0;
 }
 
 /** Keep only well-formed option values; everything else falls back to defaults. */
 export function sanitizeOptions(raw: RawOptions | undefined): AdvisorConfig {
-  const out: AdvisorConfig = { ...DEFAULT_CONFIG, disabledForModels: [] };
+  const out: AdvisorConfig = { ...DEFAULT_CONFIG, disabledForModels: [], push: { ...DEFAULT_PUSH } };
   if (!raw || typeof raw !== "object") return out;
   if (typeof raw.model === "string" && parseModelRef(raw.model)) out.model = raw.model.trim();
   if (Array.isArray(raw.disabledForModels)) {
@@ -36,6 +68,8 @@ export function sanitizeOptions(raw: RawOptions | undefined): AdvisorConfig {
   if (typeof raw.maxUses === "number" && Number.isFinite(raw.maxUses) && raw.maxUses > 0) {
     out.maxUses = Math.floor(raw.maxUses);
   }
+  out.push = { ...DEFAULT_PUSH, ...sanitizePush(raw.push) };
+  out.projectNotes = raw.projectNotes === true;
   return out;
 }
 
@@ -63,6 +97,8 @@ export function applyOptions(base: AdvisorConfig, raw: RawOptions | undefined): 
     out.disabledForModels = opts.disabledForModels;
   }
   if (opts.maxUses > 0) out.maxUses = opts.maxUses;
+  out.push = { ...base.push, ...sanitizePush(raw?.push) };
+  if (raw && typeof raw === "object" && raw.projectNotes !== undefined) out.projectNotes = opts.projectNotes;
   return out;
 }
 

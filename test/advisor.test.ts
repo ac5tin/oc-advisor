@@ -15,6 +15,7 @@ import {
   toRequestSnapshot,
 } from "../src/advisor";
 import { sanitizeOptions } from "../src/config";
+import { DEFAULT_PUSH, PUSH_INSTRUCTIONS } from "../src/push";
 import { createAdvisorCommand } from "../src/command";
 import { shouldGuide } from "../src/advisor";
 
@@ -75,6 +76,32 @@ describe("advisor tool gating", () => {
     t.resetUses("s");
     const again = await t.definition.execute({}, { sessionID: "s", id: "c3" });
     expect(again.content).toBe("guidance");
+  });
+});
+
+describe("advisor tool push review", () => {
+  const branch = [{ id: "m1", type: "user", text: "go" }];
+  const host = (maxUses: number) => ({
+    loadConfig: async () => ({ model: "p/m", disabledForModels: [], maxUses, push: DEFAULT_PUSH, projectNotes: false }),
+    readContext: async () => branch,
+    listToolNames: async () => ["advisor"],
+    generateText: async () => "[concern] check the cache key",
+  });
+
+  test("a push review does not use up the pull-mode call cap", async () => {
+    const t = createAdvisorTool(host(1) as any);
+    const note = await t.review("s", { providerID: "p", id: "m" }, []);
+    expect(note).toBe("[concern] check the cache key");
+    const pulled = await t.definition.execute({}, { sessionID: "s", id: "c1" });
+    expect(pulled.content).toBe("[concern] check the cache key");
+  });
+
+  test("forget drops a session's use count", async () => {
+    const t = createAdvisorTool(host(1) as any);
+    await t.definition.execute({}, { sessionID: "s", id: "c1" });
+    expect((await t.definition.execute({}, { sessionID: "s", id: "c2" })).content).toContain("max_uses_exceeded");
+    t.forget("s");
+    expect((await t.definition.execute({}, { sessionID: "s", id: "c3" })).content).not.toContain("max_uses_exceeded");
   });
 });
 
@@ -167,6 +194,35 @@ describe("parseAdvisorArgs", () => {
     });
     expect(parseAdvisorArgs("/advisor off")).toEqual({ action: "off" });
     expect(parseAdvisorArgs("/advisor")).toEqual({ action: "show" });
+  });
+});
+
+describe("parseAdvisorArgs push and notes", () => {
+  test("push with no value shows settings", () => {
+    expect(parseAdvisorArgs("/advisor push")).toEqual({ action: "push-show" });
+  });
+
+  test("push mode, minimum severity, cooldown and cap each set one key", () => {
+    expect(parseAdvisorArgs("/advisor push agent-end")).toEqual({ action: "push-set", patch: { mode: "agent-end" } });
+    expect(parseAdvisorArgs("/advisor push off")).toEqual({ action: "push-set", patch: { mode: "off" } });
+    expect(parseAdvisorArgs("/advisor push min blocker")).toEqual({
+      action: "push-set",
+      patch: { minSeverity: "blocker" },
+    });
+    expect(parseAdvisorArgs("/advisor push cooldown 0")).toEqual({ action: "push-set", patch: { cooldownTurns: 0 } });
+    expect(parseAdvisorArgs("/advisor push max 4")).toEqual({ action: "push-set", patch: { maxPerPrompt: 4 } });
+  });
+
+  test("invalid push values are rejected with a message", () => {
+    expect(parseAdvisorArgs("/advisor push every-turn").action).toBe("invalid");
+    expect(parseAdvisorArgs("/advisor push min ultra").action).toBe("invalid");
+    expect(parseAdvisorArgs("/advisor push max -1").action).toBe("invalid");
+    expect(parseAdvisorArgs("/advisor push cooldown x").action).toBe("invalid");
+  });
+
+  test("notes on and off toggle project notes", () => {
+    expect(parseAdvisorArgs("/advisor notes on")).toEqual({ action: "notes", on: true });
+    expect(parseAdvisorArgs("/advisor notes off")).toEqual({ action: "notes", on: false });
   });
 });
 
@@ -440,6 +496,73 @@ describe("runAdvisorCall", () => {
   });
 });
 
+describe("push and project notes in the reviewer prompt", () => {
+  const branch = [{ id: "m1", type: "user", text: "Fix the login bug" }];
+  const base = { readContext: async () => branch, listToolNames: async () => ["advisor"] };
+  const ref = { providerID: "p", id: "s" };
+
+  test("push mode appends the push instructions and the already-raised list", async () => {
+    let seen = "";
+    await runAdvisorCall(
+      {
+        ...base,
+        generateText: async (_m: any, p: string) => {
+          seen = p;
+          return "[concern] check the lock";
+        },
+      },
+      { sessionID: "s1", ref, push: { alreadyRaised: ["use a lock", "retry later"] } },
+    );
+    expect(seen).toContain(PUSH_INSTRUCTIONS);
+    expect(seen).toContain('"already raised"');
+    expect(seen).toContain("- use a lock");
+    expect(seen).toContain("- retry later");
+  });
+
+  test("pull mode has no push instructions", async () => {
+    let seen = "";
+    await runAdvisorCall(
+      {
+        ...base,
+        generateText: async (_m: any, p: string) => {
+          seen = p;
+          return "plan";
+        },
+      },
+      { sessionID: "s1", callId: "c1", ref },
+    );
+    expect(seen).not.toContain(PUSH_INSTRUCTIONS);
+  });
+
+  test("project notes are added to the reviewer system prompt when provided", async () => {
+    let seen = "";
+    await runAdvisorCall(
+      {
+        ...base,
+        readProjectNotes: async () => "Prefer small diffs.",
+        generateText: async (_m: any, p: string) => {
+          seen = p;
+          return "plan";
+        },
+      },
+      { sessionID: "s1", callId: "c1", ref },
+    );
+    expect(seen).toContain("## Project advisor notes\nPrefer small diffs.");
+  });
+
+  test("advisor notes already in the transcript are not sent back to the reviewer", () => {
+    const prompt = buildAdvisorPrompt(
+      [
+        { type: "synthetic", text: "Advisor note (concern): check the cache key." },
+        { type: "user", text: "the task" },
+      ],
+      { tools: [] },
+    );
+    expect(prompt).not.toContain("Advisor note");
+    expect(prompt).toContain("the task");
+  });
+});
+
 describe("normalizeBranch", () => {
   test("maps real session message shapes, non-array to empty", () => {
     expect(normalizeBranch(null)).toEqual([]);
@@ -495,6 +618,8 @@ function fakeCtx() {
       model: (store.get("config") as any)?.model,
       disabledForModels: [],
       maxUses: 0,
+      push: (store.get("config") as any)?.push ?? DEFAULT_PUSH,
+      projectNotes: (store.get("config") as any)?.projectNotes ?? false,
     }),
     save: async (c: unknown) => {
       store.set("config", c);
@@ -552,6 +677,43 @@ describe("advisor command", () => {
     expect(f.prompts[0].text).toContain("high");
   });
 
+  test("push with no value shows every push setting and its meaning", async () => {
+    const f = fakeCtx();
+    const cmd = createAdvisorCommand(f.host);
+    await cmd.execute({ sessionID: "s1", prompt: { text: "/advisor push" }, delivery: "steer" } as any);
+    const text = f.prompts[0].text;
+    expect(text).toContain("Push mode: off");
+    expect(text).toContain("min severity: concern");
+    expect(text).toContain("cooldown: 3");
+    expect(text).toContain("max per prompt: 2");
+  });
+
+  test("push agent-end saves the mode and confirms", async () => {
+    const f = fakeCtx();
+    f.store.set("config", { model: "anthropic/claude-opus-4-6", disabledForModels: [], maxUses: 0 });
+    const cmd = createAdvisorCommand(f.host);
+    await cmd.execute({ sessionID: "s1", prompt: { text: "/advisor push agent-end" }, delivery: "steer" } as any);
+    expect((f.store.get("config") as any).push.mode).toBe("agent-end");
+    expect((f.store.get("config") as any).model).toBe("anthropic/claude-opus-4-6");
+    expect(f.prompts[0].text).toContain("Push mode set to agent-end");
+  });
+
+  test("invalid push input replies with usage and saves nothing", async () => {
+    const f = fakeCtx();
+    const cmd = createAdvisorCommand(f.host);
+    await cmd.execute({ sessionID: "s1", prompt: { text: "/advisor push every-turn" }, delivery: "steer" } as any);
+    expect(f.store.get("config")).toBeUndefined();
+    expect(f.prompts[0].text).toContain("Usage: /advisor push");
+  });
+
+  test("notes on saves projectNotes", async () => {
+    const f = fakeCtx();
+    const cmd = createAdvisorCommand(f.host);
+    await cmd.execute({ sessionID: "s1", prompt: { text: "/advisor notes on" }, delivery: "steer" } as any);
+    expect((f.store.get("config") as any).projectNotes).toBe(true);
+    expect(f.prompts[0].text).toContain("Project notes on");
+  });
+
   test("off clears the model", async () => {
     const f = fakeCtx();
     f.store.set("config", { model: "anthropic/claude-opus-4-6", disabledForModels: [], maxUses: 0 });
@@ -573,7 +735,13 @@ describe("sanitizeOptions", () => {
   test("accepts model, blocklist, and positive maxUses", () => {
     expect(
       sanitizeOptions({ model: "anthropic/claude-opus-4-6#high", disabledForModels: ["a/b"], maxUses: 3 }),
-    ).toEqual({ model: "anthropic/claude-opus-4-6#high", disabledForModels: ["a/b"], maxUses: 3 });
+    ).toEqual({
+      model: "anthropic/claude-opus-4-6#high",
+      disabledForModels: ["a/b"],
+      maxUses: 3,
+      push: DEFAULT_PUSH,
+      projectNotes: false,
+    });
   });
 
   test("drops invalid model, non-string entries, and non-positive maxUses", () => {
@@ -581,8 +749,39 @@ describe("sanitizeOptions", () => {
       model: undefined,
       disabledForModels: ["a/b"],
       maxUses: 0,
+      push: DEFAULT_PUSH,
+      projectNotes: false,
     });
-    expect(sanitizeOptions(undefined)).toEqual({ model: undefined, disabledForModels: [], maxUses: 0 });
+    expect(sanitizeOptions(undefined)).toEqual({
+      model: undefined,
+      disabledForModels: [],
+      maxUses: 0,
+      push: DEFAULT_PUSH,
+      projectNotes: false,
+    });
+  });
+
+  test("accepts valid push settings and fills the rest from defaults", () => {
+    const cfg = sanitizeOptions({ push: { mode: "agent-end", minSeverity: "blocker", cooldownTurns: 0 } });
+    expect(cfg.push).toEqual({ mode: "agent-end", minSeverity: "blocker", cooldownTurns: 0, maxPerPrompt: 2 });
+  });
+
+  test("rejects invalid push settings", () => {
+    const cfg = sanitizeOptions({
+      push: { mode: "every-turn", minSeverity: "ultra", cooldownTurns: -1, maxPerPrompt: 1.5 },
+    });
+    expect(cfg.push).toEqual(DEFAULT_PUSH);
+  });
+
+  test("accepts projectNotes only as a boolean", () => {
+    expect(sanitizeOptions({ projectNotes: true }).projectNotes).toBe(true);
+    expect(sanitizeOptions({ projectNotes: "yes" }).projectNotes).toBe(false);
+  });
+
+  test("applyOptions overrides only the push keys present in options", () => {
+    const base = sanitizeOptions({ push: { mode: "agent-end", maxPerPrompt: 4 } });
+    const out = applyOptions(base, { push: { cooldownTurns: 1 } });
+    expect(out.push).toEqual({ mode: "agent-end", minSeverity: "concern", cooldownTurns: 1, maxPerPrompt: 4 });
   });
 });
 

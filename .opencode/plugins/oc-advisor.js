@@ -1,3 +1,53 @@
+// src/push.ts
+var DEFAULT_PUSH = { mode: "off", minSeverity: "concern", cooldownTurns: 3, maxPerPrompt: 2 };
+var ADVISOR_NOTE_PREFIX = "Advisor note";
+var RECENT_LIMIT = 5;
+var RANK = { silent: -1, nit: 0, concern: 1, blocker: 2 };
+var PUSH_INSTRUCTIONS = `You are reviewing the executor's latest completed run, not answering a question. Reply with exactly SILENT when nothing material needs the executor's attention. Otherwise start your reply with one tag, [nit], [concern] or [blocker], then the advice in at most three sentences. Use [blocker] only when continuing would clearly waste work or produce broken output. Never repeat advice listed under "already raised".`;
+function parseReview(text) {
+  const trimmed = text.trim();
+  if (trimmed === "" || /^silent\b/i.test(trimmed))
+    return { severity: "silent", body: "" };
+  const tag = /^\[(nit|concern|blocker)\]\s*/i.exec(trimmed);
+  if (tag)
+    return { severity: tag[1].toLowerCase(), body: trimmed.slice(tag[0].length).trim() };
+  return { severity: "nit", body: trimmed };
+}
+function shouldPush(severity, minSeverity) {
+  return RANK[severity] >= RANK[minSeverity];
+}
+function newPushState() {
+  return { cooldown: 0, pushesThisPrompt: 0, recent: [], raw: [] };
+}
+function canPush(state, cfg) {
+  return state.cooldown === 0 && state.pushesThisPrompt < cfg.maxPerPrompt;
+}
+function skipTurn(state) {
+  if (state.cooldown > 0)
+    state.cooldown -= 1;
+}
+function recordPush(state, body, cfg) {
+  state.pushesThisPrompt += 1;
+  state.cooldown = cfg.cooldownTurns;
+  state.recent = [normalizeNote(body), ...state.recent].slice(0, RECENT_LIMIT);
+  state.raw = [body, ...state.raw].slice(0, RECENT_LIMIT);
+}
+function resetPrompt(state) {
+  state.pushesThisPrompt = 0;
+}
+function isRepeat(state, body) {
+  return state.recent.includes(normalizeNote(body));
+}
+function normalizeNote(text) {
+  return text.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function pushNoteText(severity, body) {
+  return `${ADVISOR_NOTE_PREFIX} (${severity}): ${body}`;
+}
+function isAdvisorNote(text) {
+  return text.startsWith(`${ADVISOR_NOTE_PREFIX} (`);
+}
+
 // src/advisor.ts
 function parseModelRef(raw) {
   const text = raw.trim();
@@ -45,13 +95,39 @@ function maxUsesExceeded(used, maxUses) {
     return false;
   return used >= maxUses;
 }
+var PUSH_USAGE = "Usage: /advisor push [off | agent-end | min nit|concern|blocker | cooldown N | max N]";
 function parseAdvisorArgs(text) {
   const rest = text.replace(/^\s*\/advisor\b\s*/, "").trim();
   if (!rest)
     return { action: "show" };
   if (rest.toLowerCase() === "off")
     return { action: "off" };
+  const [head, ...args] = rest.split(/\s+/);
+  if (head.toLowerCase() === "push")
+    return parsePushArgs(args);
+  if (head.toLowerCase() === "notes") {
+    const value = args[0]?.toLowerCase();
+    if (value === "on" || value === "off")
+      return { action: "notes", on: value === "on" };
+    return { action: "invalid", message: "Usage: /advisor notes on|off" };
+  }
   return { action: "set", model: rest };
+}
+function parsePushArgs(args) {
+  if (args.length === 0)
+    return { action: "push-show" };
+  const [key, value] = [args[0].toLowerCase(), args[1]];
+  if (args.length === 1 && (key === "off" || key === "agent-end")) {
+    return { action: "push-set", patch: { mode: key } };
+  }
+  if (args.length === 2 && key === "min" && (value === "nit" || value === "concern" || value === "blocker")) {
+    return { action: "push-set", patch: { minSeverity: value } };
+  }
+  if (args.length === 2 && (key === "cooldown" || key === "max") && /^\d+$/.test(value)) {
+    const n = Number(value);
+    return { action: "push-set", patch: key === "cooldown" ? { cooldownTurns: n } : { maxPerPrompt: n } };
+  }
+  return { action: "invalid", message: PUSH_USAGE };
 }
 
 class AdvisorError extends Error {
@@ -71,6 +147,13 @@ async function contextLimitOf(deps, ref) {
     return;
   }
 }
+async function projectNotesOf(deps) {
+  try {
+    return (await deps.readProjectNotes?.())?.trim() || undefined;
+  } catch {
+    return;
+  }
+}
 async function runAdvisorCall(deps, input) {
   const messages = await deps.readContext(input.sessionID).catch((e) => {
     throw new AdvisorError(`could not read session context: ${e instanceof Error ? e.message : String(e)}`);
@@ -83,9 +166,21 @@ async function runAdvisorCall(deps, input) {
     system: snapshot?.system,
     budgetChars: reviewBudgetChars(await contextLimitOf(deps, input.ref))
   });
-  const text = await deps.generateText(input.ref, `${ADVISOR_SYSTEM_PROMPT}
+  const notes = await projectNotesOf(deps);
+  const system = notes ? `${ADVISOR_SYSTEM_PROMPT}
 
-${branch}`, { signal: input.signal }).catch((e) => {
+## Project advisor notes
+${notes}` : ADVISOR_SYSTEM_PROMPT;
+  const push = input.push ? `
+
+${PUSH_INSTRUCTIONS}
+
+"already raised" (do not repeat):
+${input.push.alreadyRaised.map((n) => `- ${n}`).join(`
+`) || "- (none)"}` : "";
+  const text = await deps.generateText(input.ref, `${system}
+
+${branch}${push}`, { signal: input.signal }).catch((e) => {
     throw new AdvisorError(`Advisor call failed: ${e instanceof Error ? e.message : String(e)}`);
   });
   if (!text.trim())
@@ -148,6 +243,8 @@ ${texts.join(`
 function renderMessage(msg, inflightCallId, cap) {
   if (msg.type === "user" || msg.type === "synthetic") {
     if (!msg.text)
+      return null;
+    if (msg.type === "synthetic" && isAdvisorNote(msg.text))
       return null;
     return `## ${msg.type}:
 ${msg.text}`;
@@ -296,16 +393,44 @@ function toArray(models) {
     return obj.models;
   return Object.values(obj);
 }
+function describePush(push, projectNotes) {
+  return [
+    `Push mode: ${push.mode}`,
+    `(min severity: ${push.minSeverity}, cooldown: ${push.cooldownTurns} agent-end runs,`,
+    `max per prompt: ${push.maxPerPrompt}, project notes: ${projectNotes ? "on" : "off"}).`,
+    "See docs/push-mode.md for what each setting does."
+  ].join(" ");
+}
 function createAdvisorCommand(host) {
   return {
     name: "advisor",
-    description: "Select the advisor reviewer model: /advisor provider/model[#variant], /advisor off",
+    description: "Advisor reviewer: /advisor provider/model[#variant] | off | push [off|agent-end|min|cooldown|max] | notes on|off",
     execute: async ({ sessionID, prompt, delivery }) => {
       const reply = (text) => host.prompt({ sessionID, text, delivery });
       const config = await host.load();
       const arg = parseAdvisorArgs(prompt?.text ?? "");
+      if (arg.action === "invalid") {
+        await reply(arg.message);
+        return;
+      }
+      if (arg.action === "push-show") {
+        await reply(describePush(config.push, config.projectNotes));
+        return;
+      }
+      if (arg.action === "push-set") {
+        const push = { ...config.push, ...arg.patch };
+        await host.save({ ...config, push });
+        const summary = arg.patch.mode !== undefined ? `Push mode set to ${push.mode}.` : "Push setting updated.";
+        await reply(`${summary} ${describePush(push, config.projectNotes)}`);
+        return;
+      }
+      if (arg.action === "notes") {
+        await host.save({ ...config, projectNotes: arg.on });
+        await reply(`Project notes ${arg.on ? "on" : "off"}: reads .opencode/advisor.md in the project when enabled.`);
+        return;
+      }
       if (arg.action === "show") {
-        await reply(config.model ? `Advisor: ${config.model}${config.maxUses > 0 ? ` (max ${config.maxUses} calls per request)` : ""}` : "Advisor: off. Set one with /advisor provider/model[#variant], e.g. /advisor anthropic/claude-opus-4-6#high");
+        await reply(config.model ? `Advisor: ${config.model}${config.maxUses > 0 ? ` (max ${config.maxUses} calls per request)` : ""}. Push mode: ${config.push.mode}.` : "Advisor: off. Set one with /advisor provider/model[#variant], e.g. /advisor anthropic/claude-opus-4-6#high");
         return;
       }
       if (arg.action === "off") {
@@ -345,9 +470,36 @@ function isDisabledEntry(entry) {
   const { model, minEffort } = entry;
   return typeof model === "string" && parseModelRef(model) !== null && (minEffort === undefined || EFFORT_LEVELS.includes(minEffort));
 }
-var DEFAULT_CONFIG = { model: undefined, disabledForModels: [], maxUses: 0 };
+var DEFAULT_CONFIG = {
+  model: undefined,
+  disabledForModels: [],
+  maxUses: 0,
+  push: DEFAULT_PUSH,
+  projectNotes: false
+};
+var PUSH_MODES = ["off", "agent-end"];
+var SEVERITIES = ["nit", "concern", "blocker"];
+function sanitizePush(raw) {
+  if (!raw || typeof raw !== "object")
+    return {};
+  const r = raw;
+  const out = {};
+  if (PUSH_MODES.includes(r.mode))
+    out.mode = r.mode;
+  if (SEVERITIES.includes(r.minSeverity)) {
+    out.minSeverity = r.minSeverity;
+  }
+  if (isNonNegativeInt(r.cooldownTurns))
+    out.cooldownTurns = r.cooldownTurns;
+  if (isNonNegativeInt(r.maxPerPrompt))
+    out.maxPerPrompt = r.maxPerPrompt;
+  return out;
+}
+function isNonNegativeInt(v) {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0;
+}
 function sanitizeOptions(raw) {
-  const out = { ...DEFAULT_CONFIG, disabledForModels: [] };
+  const out = { ...DEFAULT_CONFIG, disabledForModels: [], push: { ...DEFAULT_PUSH } };
   if (!raw || typeof raw !== "object")
     return out;
   if (typeof raw.model === "string" && parseModelRef(raw.model))
@@ -358,6 +510,8 @@ function sanitizeOptions(raw) {
   if (typeof raw.maxUses === "number" && Number.isFinite(raw.maxUses) && raw.maxUses > 0) {
     out.maxUses = Math.floor(raw.maxUses);
   }
+  out.push = { ...DEFAULT_PUSH, ...sanitizePush(raw.push) };
+  out.projectNotes = raw.projectNotes === true;
   return out;
 }
 function sanitizeStored(raw) {
@@ -379,6 +533,9 @@ function applyOptions(base, raw) {
   }
   if (opts.maxUses > 0)
     out.maxUses = opts.maxUses;
+  out.push = { ...base.push, ...sanitizePush(raw?.push) };
+  if (raw && typeof raw === "object" && raw.projectNotes !== undefined)
+    out.projectNotes = opts.projectNotes;
   return out;
 }
 async function saveConfig(storage, config) {
@@ -388,11 +545,27 @@ async function readConfig(storage, options) {
   return applyOptions(await resolveConfig(storage), options);
 }
 
+// src/notes.ts
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+var NOTES_MAX_CHARS = 8000;
+var NOTES_FILE = join(".opencode", "advisor.md");
+async function readProjectNotes(directory) {
+  try {
+    return (await readFile(join(directory, NOTES_FILE), "utf8")).slice(0, NOTES_MAX_CHARS);
+  } catch {
+    return;
+  }
+}
+
 // src/tool.ts
 var SHORT_DESCRIPTION = "Escalate to a stronger reviewer model for guidance. Takes NO parameters — your entire conversation is forwarded automatically. Call BEFORE substantive work, when stuck, or before declaring done.";
 function createAdvisorTool(host) {
   const uses = new Map;
   return {
+    review(sessionID, ref, alreadyRaised) {
+      return runAdvisorCall(host, { sessionID, ref, push: { alreadyRaised } });
+    },
     definition: {
       name: "advisor",
       description: SHORT_DESCRIPTION,
@@ -422,6 +595,9 @@ function createAdvisorTool(host) {
     },
     resetUses(sessionID) {
       uses.set(sessionID, 0);
+    },
+    forget(sessionID) {
+      uses.delete(sessionID);
     }
   };
 }
@@ -433,11 +609,17 @@ var src_default = {
     const read = () => readConfig(ctx.storage, ctx.options);
     const executorKey = (model) => `${model?.providerID}/${model?.id}`;
     const snapshots = new Map;
+    const executors = new Map;
+    const pushStates = new Map;
     const advisor = createAdvisorTool({
       loadConfig: read,
       readContext: async (sessionID) => ctx.session.context({ sessionID }),
       readRequest: (sessionID) => snapshots.get(sessionID),
       contextLimit: async (model) => toArray2(await ctx.model.list()).find((m) => m.providerID === model.providerID && m.id === model.id)?.limit?.context,
+      readProjectNotes: async () => {
+        const config = await read();
+        return config.projectNotes ? readProjectNotes(ctx.location.directory) : undefined;
+      },
       listToolNames: async () => toArray2(await ctx.tool.list()).map((t) => t.id ?? t.name).filter((n) => typeof n === "string"),
       generateText: async (model, prompt, opts) => {
         const result = await ctx.generate.text({
@@ -464,10 +646,14 @@ var src_default = {
     });
     await ctx.session.hook("prompt", async (event) => {
       advisor.resetUses(event.sessionID);
+      const state = pushStates.get(event.sessionID);
+      if (state)
+        resetPrompt(state);
     });
     await ctx.session.hook("context", async (event) => {
       try {
         const e = event;
+        executors.set(e.sessionID, { key: executorKey(e.model), effort: e.model?.variant });
         const config = await read();
         if (!shouldGuide(config, executorKey(e.model), e.model?.variant)) {
           if (e.tools)
@@ -478,7 +664,53 @@ var src_default = {
         snapshots.set(e.sessionID, toRequestSnapshot(e.system, e.tools));
       } catch {}
     });
-    return () => {};
+    const afterRun = async (sessionID) => {
+      const config = await read();
+      if (config.push.mode === "off" || config.model === undefined)
+        return;
+      const executor = executors.get(sessionID);
+      if (!executor || !shouldGuide(config, executor.key, executor.effort))
+        return;
+      const ref = parseModelRef(config.model);
+      if (!ref)
+        return;
+      const state = pushStates.get(sessionID) ?? newPushState();
+      pushStates.set(sessionID, state);
+      if (state.cooldown > 0) {
+        skipTurn(state);
+        return;
+      }
+      if (!canPush(state, config.push))
+        return;
+      const { severity, body } = parseReview(await advisor.review(sessionID, ref, state.raw));
+      if (!shouldPush(severity, config.push.minSeverity) || isRepeat(state, body))
+        return;
+      recordPush(state, body, config.push);
+      await ctx.session.synthetic({
+        sessionID,
+        text: pushNoteText(severity, body),
+        delivery: "queue",
+        resume: false
+      });
+    };
+    const controller = new AbortController;
+    (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          const e = event;
+          if (e.type === "session.execution.succeeded") {
+            await afterRun(e.data.sessionID).catch(() => {});
+          } else if (e.type === "session.deleted") {
+            const id = e.data.sessionID;
+            advisor.forget(id);
+            pushStates.delete(id);
+            executors.delete(id);
+            snapshots.delete(id);
+          }
+        }
+      } catch {}
+    })();
+    return () => controller.abort();
   }
 };
 function toArray2(models) {
