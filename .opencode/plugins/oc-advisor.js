@@ -21,12 +21,24 @@ function canonicalKey(ref) {
     return ref.trim();
   return `${parsed.providerID}/${parsed.id}`;
 }
-function isDisabledModel(executorRef, disabledForModels) {
-  const key = canonicalKey(executorRef);
-  return disabledForModels.some((entry) => canonicalKey(entry) === key);
+var EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+function effortRank(effort) {
+  return effort === undefined ? -1 : EFFORT_LEVELS.indexOf(effort);
 }
-function shouldGuide(config, executorRef) {
-  return config.model !== undefined && !isDisabledModel(executorRef, config.disabledForModels);
+function isDisabledModel(executorRef, disabledForModels, effort) {
+  const key = canonicalKey(executorRef);
+  return disabledForModels.some((entry) => {
+    const model = typeof entry === "string" ? entry : entry.model;
+    if (canonicalKey(model) !== key)
+      return false;
+    if (typeof entry === "string" || entry.minEffort === undefined)
+      return true;
+    const rank = effortRank(effort);
+    return rank >= 0 && rank >= effortRank(entry.minEffort);
+  });
+}
+function shouldGuide(config, executorRef, effort) {
+  return config.model !== undefined && !isDisabledModel(executorRef, config.disabledForModels, effort);
 }
 function maxUsesExceeded(used, maxUses) {
   if (maxUses === undefined || maxUses <= 0)
@@ -44,14 +56,32 @@ function parseAdvisorArgs(text) {
 
 class AdvisorError extends Error {
 }
+function toRequestSnapshot(system, tools) {
+  return {
+    system: system.map((part) => part.text ?? "").filter(Boolean).join(`
+
+`),
+    tools: Object.entries(tools).map(([name, t]) => ({ name, description: t.description, input: t.input }))
+  };
+}
+async function contextLimitOf(deps, ref) {
+  try {
+    return await deps.contextLimit?.(ref);
+  } catch {
+    return;
+  }
+}
 async function runAdvisorCall(deps, input) {
   const messages = await deps.readContext(input.sessionID).catch((e) => {
     throw new AdvisorError(`could not read session context: ${e instanceof Error ? e.message : String(e)}`);
   });
-  const toolNames = await deps.listToolNames().catch(() => ["advisor"]);
+  const snapshot = deps.readRequest?.(input.sessionID);
+  const tools = snapshot?.tools ?? (await deps.listToolNames().catch(() => ["advisor"])).map((name) => ({ name }));
   const branch = buildAdvisorPrompt(normalizeBranch(messages), {
     inflightCallId: input.callId,
-    toolNames
+    tools,
+    system: snapshot?.system,
+    budgetChars: reviewBudgetChars(await contextLimitOf(deps, input.ref))
   });
   const text = await deps.generateText(input.ref, `${ADVISOR_SYSTEM_PROMPT}
 
@@ -115,16 +145,14 @@ ${texts.join(`
   }
   return out;
 }
-function renderMessage(msg, inflightCallId) {
+function renderMessage(msg, inflightCallId, cap) {
   if (msg.type === "user" || msg.type === "synthetic") {
     if (!msg.text)
       return null;
     return `## ${msg.type}:
 ${msg.text}`;
   }
-  const parts = (msg.content ?? []).filter((p) => p.id !== inflightCallId);
-  if (msg.content !== undefined && msg.content.some((p) => p.id === inflightCallId))
-    return null;
+  const parts = (msg.content ?? []).filter((p) => inflightCallId === undefined || p.id !== inflightCallId);
   const who = msg.agent ?? (msg.model ? `${msg.model.providerID}/${msg.model.id}` : "assistant");
   const lines = [];
   for (const p of parts) {
@@ -134,7 +162,7 @@ ${msg.text}`;
       lines.push(`tool call ${p.name}${p.id ? ` (${p.id})` : ""}${p.input ? ` input: ${p.input}` : ""}`);
       if (p.result)
         lines.push(`result:
-${p.result}`);
+${elide(p.result, cap)}`);
     }
   }
   if (msg.text && lines.length === 0)
@@ -145,22 +173,91 @@ ${p.result}`);
 ${lines.join(`
 `)}`;
 }
-function buildAdvisorPrompt(messages, opts) {
-  const out = [`Available tools: ${opts.toolNames.join(", ")}`, ""];
+var RESULT_CAP_CHARS = 8000;
+var REVIEW_BUDGET_CHARS = 400000;
+var REVIEW_SHARE = 0.6;
+var CHARS_PER_TOKEN = 3.5;
+function reviewBudgetChars(contextTokens) {
+  if (!contextTokens || contextTokens <= 0)
+    return REVIEW_BUDGET_CHARS;
+  return Math.floor(contextTokens * REVIEW_SHARE * CHARS_PER_TOKEN);
+}
+function elide(text, cap) {
+  if (text.length <= cap)
+    return text;
+  const head = Math.floor(cap * 0.75);
+  return `${text.slice(0, head)}
+[elided ${text.length - cap} chars]
+${text.slice(-(cap - head))}`;
+}
+function renderTools(tools) {
+  const sorted = [...tools].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const lines = sorted.map((t) => t.description === undefined && t.input === undefined ? `- ${t.name}` : `- ${t.name}: ${t.description ?? ""}${t.input === undefined ? "" : `
+  input: ${JSON.stringify(t.input)}`}`);
+  return `## tools:
+${lines.join(`
+`)}`;
+}
+function renderBlocks(messages, inflightCallId, cap) {
+  const blocks = [];
+  let pin = -1;
   let lastWasUser = false;
   for (const msg of messages) {
-    const rendered = renderMessage(msg, opts.inflightCallId);
+    const rendered = renderMessage(msg, inflightCallId, cap);
     if (!rendered) {
       lastWasUser = false;
       continue;
     }
-    out.push(rendered, "");
+    if (pin < 0 && msg.type === "user")
+      pin = blocks.length;
+    blocks.push(rendered);
     lastWasUser = msg.type === "user";
   }
   if (!lastWasUser)
-    out.push(`## user:
+    blocks.push(`## user:
 Please advise on the executor's situation above.`);
-  return out.join(`
+  return { blocks, pin: Math.max(pin, 0) };
+}
+function fitTranscript(blocks, pin, room) {
+  const last = blocks.length - 1;
+  const keep = new Set([pin, last]);
+  let used = [...keep].reduce((sum, i) => sum + blocks[i].length, 0);
+  for (let i = last - 1;i >= 0; i--) {
+    if (i === pin)
+      continue;
+    if (used + blocks[i].length > room)
+      break;
+    used += blocks[i].length;
+    keep.add(i);
+  }
+  const out = [];
+  let omitted = 0;
+  blocks.forEach((block, i) => {
+    if (!keep.has(i)) {
+      omitted += 1;
+      return;
+    }
+    if (omitted > 0)
+      out.push(`## (${omitted} earlier messages omitted to fit the budget)`);
+    omitted = 0;
+    out.push(block);
+  });
+  return out;
+}
+function buildAdvisorPrompt(messages, opts) {
+  const head = [
+    opts.system ? `## system (executor's system prompt, addressed to the executor, not you):
+${opts.system}` : "",
+    renderTools(opts.tools)
+  ].filter(Boolean);
+  const room = (opts.budgetChars ?? REVIEW_BUDGET_CHARS) - head.join(`
+
+`).length;
+  const total = (blocks) => blocks.reduce((sum, b) => sum + b.length, 0);
+  const full = renderBlocks(messages, opts.inflightCallId, Infinity);
+  const transcript = total(full.blocks) <= room ? full : renderBlocks(messages, opts.inflightCallId, RESULT_CAP_CHARS);
+  return [...head, ...fitTranscript(transcript.blocks, transcript.pin, room)].join(`
+
 `);
 }
 var EXECUTOR_GUIDANCE = `You have access to an \`advisor\` tool backed by a stronger reviewer model. It takes NO parameters — when you call advisor(), your entire conversation history is automatically forwarded. They see the task, every tool call you've made, every result you've seen.
@@ -176,7 +273,7 @@ On tasks longer than a few steps, call advisor at least once before committing t
 
 Give the advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim (the file says X, the paper states Y), adapt. A passing self-test is not evidence the advice is wrong — it's evidence your test doesn't check what the advice is checking.
 
-If you've already retrieved data pointing one way and the advisor points another: don't silently switch. Surface the conflict in one more advisor call — "I found X, you suggest Y, which constraint breaks the tie?" A reconcile call is cheaper than committing to the wrong branch.
+If you've already retrieved data pointing one way and the advisor points another: don't silently switch. Surface the conflict in one more advisor call — "I found X, you suggest Y, which constraint breaks the tie?" The advisor saw your evidence but may have underweighted it; a reconcile call is cheaper than committing to the wrong branch.
 
 After each advisor result, put the advisor's key guidance into your next visible reply to the user before continuing — quote or paraphrase the plan, correction, or stop signal. The user often cannot see collapsed tool results; do not keep the advisor's words only in silent tool context.`;
 var ADVISOR_SYSTEM_PROMPT = `You are an advisor model in an advisor-strategy pattern. An executor model is running a task end-to-end — calling tools, reading results, iterating toward a solution. When the executor hits a decision it cannot reasonably solve alone, it consults you for guidance. The executor's full tool inventory is prepended before the conversation so you can judge tool-choice correctness.
@@ -186,7 +283,7 @@ You read the shared conversation context and return ONE of:
 - a correction (the executor is going down a wrong path — redirect it),
 - a stop signal (the executor should halt and escalate to the user).
 
-You NEVER call tools. You NEVER produce user-facing output. Be concise, directive, and grounded in the shared context. Name files, functions, and line numbers where possible. No preamble, no apologies, no meta-commentary about being an advisor — just the guidance the executor needs.`;
+You NEVER call tools. You NEVER produce user-facing output. Be concise, directive, and grounded in the shared context. Name files, functions, and line numbers where possible. No preamble, no apologies, no meta-commentary about being an advisor — just the guidance the executor needs. Stay silent when the executor is on track. Do not ask it to clarify the user's request or second-guess intent it has understood, and do not repeat advice it already has or restate errors it can see. Cite transcript evidence for each concrete claim.`;
 
 // src/command.ts
 function toArray(models) {
@@ -240,6 +337,14 @@ function createAdvisorCommand(host) {
 }
 
 // src/config.ts
+function isDisabledEntry(entry) {
+  if (typeof entry === "string")
+    return parseModelRef(entry) !== null;
+  if (!entry || typeof entry !== "object")
+    return false;
+  const { model, minEffort } = entry;
+  return typeof model === "string" && parseModelRef(model) !== null && (minEffort === undefined || EFFORT_LEVELS.includes(minEffort));
+}
 var DEFAULT_CONFIG = { model: undefined, disabledForModels: [], maxUses: 0 };
 function sanitizeOptions(raw) {
   const out = { ...DEFAULT_CONFIG, disabledForModels: [] };
@@ -248,7 +353,7 @@ function sanitizeOptions(raw) {
   if (typeof raw.model === "string" && parseModelRef(raw.model))
     out.model = raw.model.trim();
   if (Array.isArray(raw.disabledForModels)) {
-    out.disabledForModels = raw.disabledForModels.filter((e) => typeof e === "string" && parseModelRef(e) !== null);
+    out.disabledForModels = raw.disabledForModels.filter(isDisabledEntry);
   }
   if (typeof raw.maxUses === "number" && Number.isFinite(raw.maxUses) && raw.maxUses > 0) {
     out.maxUses = Math.floor(raw.maxUses);
@@ -327,9 +432,12 @@ var src_default = {
   async setup(ctx) {
     const read = () => readConfig(ctx.storage, ctx.options);
     const executorKey = (model) => `${model?.providerID}/${model?.id}`;
+    const snapshots = new Map;
     const advisor = createAdvisorTool({
       loadConfig: read,
       readContext: async (sessionID) => ctx.session.context({ sessionID }),
+      readRequest: (sessionID) => snapshots.get(sessionID),
+      contextLimit: async (model) => toArray2(await ctx.model.list()).find((m) => m.providerID === model.providerID && m.id === model.id)?.limit?.context,
       listToolNames: async () => toArray2(await ctx.tool.list()).map((t) => t.id ?? t.name).filter((n) => typeof n === "string"),
       generateText: async (model, prompt, opts) => {
         const result = await ctx.generate.text({
@@ -359,10 +467,15 @@ var src_default = {
     });
     await ctx.session.hook("context", async (event) => {
       try {
+        const e = event;
         const config = await read();
-        if (!shouldGuide(config, executorKey(event.model)))
+        if (!shouldGuide(config, executorKey(e.model), e.model?.variant)) {
+          if (e.tools)
+            delete e.tools.advisor;
           return;
-        event.system.push({ type: "text", text: EXECUTOR_GUIDANCE });
+        }
+        e.system.push({ type: "text", text: EXECUTOR_GUIDANCE });
+        snapshots.set(e.sessionID, toRequestSnapshot(e.system, e.tools));
       } catch {}
     });
     return () => {};

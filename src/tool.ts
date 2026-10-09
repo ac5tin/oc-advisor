@@ -1,4 +1,4 @@
-import { AdvisorError, maxUsesExceeded, parseModelRef, runAdvisorCall, type ModelRef } from "./advisor";
+import { AdvisorError, maxUsesExceeded, parseModelRef, runAdvisorCall, type ModelRef, type RequestSnapshot } from "./advisor";
 import type { AdvisorConfig } from "./config";
 
 export const SHORT_DESCRIPTION =
@@ -9,6 +9,8 @@ export interface ToolHost {
   readContext(sessionID: string): Promise<unknown>;
   listToolNames(): Promise<string[]>;
   generateText(model: ModelRef, prompt: string, opts?: { signal?: AbortSignal }): Promise<string>;
+  readRequest?(sessionID: string): RequestSnapshot | undefined;
+  contextLimit?(model: ModelRef): Promise<number | undefined>;
 }
 
 export interface AdvisorTool {

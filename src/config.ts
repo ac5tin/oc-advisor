@@ -1,9 +1,20 @@
-import { parseModelRef } from "./advisor";
+import { EFFORT_LEVELS, parseModelRef, type DisabledEntry } from "./advisor";
 
 export interface AdvisorConfig {
   model?: string;
-  disabledForModels: string[];
+  disabledForModels: DisabledEntry[];
   maxUses: number;
+}
+
+function isDisabledEntry(entry: unknown): entry is DisabledEntry {
+  if (typeof entry === "string") return parseModelRef(entry) !== null;
+  if (!entry || typeof entry !== "object") return false;
+  const { model, minEffort } = entry as { model?: unknown; minEffort?: unknown };
+  return (
+    typeof model === "string" &&
+    parseModelRef(model) !== null &&
+    (minEffort === undefined || EFFORT_LEVELS.includes(minEffort as (typeof EFFORT_LEVELS)[number]))
+  );
 }
 
 export const DEFAULT_CONFIG: AdvisorConfig = { model: undefined, disabledForModels: [], maxUses: 0 };
@@ -20,9 +31,7 @@ export function sanitizeOptions(raw: RawOptions | undefined): AdvisorConfig {
   if (!raw || typeof raw !== "object") return out;
   if (typeof raw.model === "string" && parseModelRef(raw.model)) out.model = raw.model.trim();
   if (Array.isArray(raw.disabledForModels)) {
-    out.disabledForModels = raw.disabledForModels.filter(
-      (e): e is string => typeof e === "string" && parseModelRef(e) !== null,
-    );
+    out.disabledForModels = raw.disabledForModels.filter(isDisabledEntry);
   }
   if (typeof raw.maxUses === "number" && Number.isFinite(raw.maxUses) && raw.maxUses > 0) {
     out.maxUses = Math.floor(raw.maxUses);

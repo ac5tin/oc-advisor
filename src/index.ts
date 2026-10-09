@@ -1,5 +1,5 @@
 import type { Context } from "@opencode/plugin/promise/plugin";
-import { EXECUTOR_GUIDANCE, shouldGuide } from "./advisor";
+import { EXECUTOR_GUIDANCE, shouldGuide, toRequestSnapshot, type RequestSnapshot } from "./advisor";
 import { createAdvisorCommand } from "./command";
 import { readConfig, saveConfig, type AdvisorConfig } from "./config";
 import { createAdvisorTool } from "./tool";
@@ -9,10 +9,15 @@ export default {
   async setup(ctx: Context) {
     const read = (): Promise<AdvisorConfig> => readConfig(ctx.storage, ctx.options);
     const executorKey = (model: any) => `${model?.providerID}/${model?.id}`;
+    const snapshots = new Map<string, RequestSnapshot>();
 
     const advisor = createAdvisorTool({
       loadConfig: read,
       readContext: async (sessionID: string) => ctx.session.context({ sessionID }),
+      readRequest: (sessionID: string) => snapshots.get(sessionID),
+      contextLimit: async (model: { providerID: string; id: string }) =>
+        toArray(await ctx.model.list()).find((m) => m.providerID === model.providerID && m.id === model.id)?.limit
+          ?.context,
       listToolNames: async () =>
         toArray(await ctx.tool.list())
           .map((t) => t.id ?? t.name)
@@ -55,12 +60,14 @@ export default {
 
     await ctx.session.hook("context", async (event) => {
       try {
-        // Tool stays visible always: an unconfigured call returns guidance
-        // telling the executor to run /advisor. Only the guidance injection
-        // is gated here.
+        const e = event as any;
         const config = await read();
-        if (!shouldGuide(config, executorKey((event as any).model))) return;
-        (event as any).system.push({ type: "text", text: EXECUTOR_GUIDANCE });
+        if (!shouldGuide(config, executorKey(e.model), e.model?.variant)) {
+          if (e.tools) delete e.tools.advisor;
+          return;
+        }
+        e.system.push({ type: "text", text: EXECUTOR_GUIDANCE });
+        snapshots.set(e.sessionID, toRequestSnapshot(e.system, e.tools));
       } catch {
         // Never break the agent loop from a guidance hook.
       }
