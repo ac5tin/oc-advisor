@@ -76,6 +76,7 @@ Static config in `opencode.json` (takes precedence, restart to apply):
 | `maxUses` | Cap advisor calls per user request. `0` or unset = unlimited. Counter resets on each new prompt. | `0` |
 | `push` | Push mode: `{ "mode": "off" \| "agent-end", "minSeverity": "nit" \| "concern" \| "blocker", "cooldownTurns": 3, "maxPerPrompt": 2 }`. The reviewer may post a note after a finished run. See [docs/push-mode.md](./docs/push-mode.md). | `{ "mode": "off", … }` |
 | `projectNotes` | Read `.opencode/advisor.md` as reviewer priorities. | `false` |
+| `mainAgentOnly` | Confine the advisor to the main agent: subagent (child) sessions get no tool, no guidance, and no push reviews. Static only — `/advisor` never persists it. | `false` |
 
 `/advisor` persists `model` to plugin storage; static `options` override stored values when present.
 

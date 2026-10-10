@@ -7,6 +7,7 @@ export interface AdvisorConfig {
   maxUses: number;
   push: PushConfig;
   projectNotes: boolean;
+  mainAgentOnly: boolean;
 }
 
 function isDisabledEntry(entry: unknown): entry is DisabledEntry {
@@ -26,6 +27,7 @@ export const DEFAULT_CONFIG: AdvisorConfig = {
   maxUses: 0,
   push: DEFAULT_PUSH,
   projectNotes: false,
+  mainAgentOnly: false,
 };
 
 export interface RawOptions {
@@ -34,6 +36,7 @@ export interface RawOptions {
   maxUses?: unknown;
   push?: unknown;
   projectNotes?: unknown;
+  mainAgentOnly?: unknown;
 }
 
 const PUSH_MODES = ["off", "agent-end"] as const;
@@ -70,6 +73,7 @@ export function sanitizeOptions(raw: RawOptions | undefined): AdvisorConfig {
   }
   out.push = { ...DEFAULT_PUSH, ...sanitizePush(raw.push) };
   out.projectNotes = raw.projectNotes === true;
+  out.mainAgentOnly = raw.mainAgentOnly === true;
   return out;
 }
 
@@ -99,6 +103,8 @@ export function applyOptions(base: AdvisorConfig, raw: RawOptions | undefined): 
   if (opts.maxUses > 0) out.maxUses = opts.maxUses;
   out.push = { ...base.push, ...sanitizePush(raw?.push) };
   if (raw && typeof raw === "object" && raw.projectNotes !== undefined) out.projectNotes = opts.projectNotes;
+  // mainAgentOnly is static-only: opencode.json is the sole source; stored config is never consulted.
+  out.mainAgentOnly = opts.mainAgentOnly;
   return out;
 }
 

@@ -29,7 +29,7 @@ export default {
     const read = (): Promise<AdvisorConfig> => readConfig(ctx.storage, ctx.options);
     const executorKey = (model: any) => `${model?.providerID}/${model?.id}`;
     const snapshots = new Map<string, RequestSnapshot>();
-    const executors = new Map<string, { key: string; effort?: string }>();
+    const executors = new Map<string, { key: string; effort?: string; child: boolean }>();
     const pushStates = new Map<string, PushState>();
 
     const advisor = createAdvisorTool({
@@ -88,9 +88,12 @@ export default {
     await ctx.session.hook("context", async (event) => {
       try {
         const e = event as any;
-        executors.set(e.sessionID, { key: executorKey(e.model), effort: e.model?.variant });
         const config = await read();
-        if (!shouldGuide(config, executorKey(e.model), e.model?.variant)) {
+        const child = config.mainAgentOnly
+          ? (await ctx.session.get({ sessionID: e.sessionID }))?.parentID !== undefined
+          : false;
+        executors.set(e.sessionID, { key: executorKey(e.model), effort: e.model?.variant, child });
+        if (child || !shouldGuide(config, executorKey(e.model), e.model?.variant)) {
           if (e.tools) delete e.tools.advisor;
           return;
         }
@@ -107,7 +110,7 @@ export default {
       const config = await read();
       if (config.push.mode === "off" || config.model === undefined) return;
       const executor = executors.get(sessionID);
-      if (!executor || !shouldGuide(config, executor.key, executor.effort)) return;
+      if (!executor || executor.child || !shouldGuide(config, executor.key, executor.effort)) return;
       const ref = parseModelRef(config.model);
       if (!ref) return;
       const state = pushStates.get(sessionID) ?? newPushState();

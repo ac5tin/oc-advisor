@@ -475,7 +475,8 @@ var DEFAULT_CONFIG = {
   disabledForModels: [],
   maxUses: 0,
   push: DEFAULT_PUSH,
-  projectNotes: false
+  projectNotes: false,
+  mainAgentOnly: false
 };
 var PUSH_MODES = ["off", "agent-end"];
 var SEVERITIES = ["nit", "concern", "blocker"];
@@ -512,6 +513,7 @@ function sanitizeOptions(raw) {
   }
   out.push = { ...DEFAULT_PUSH, ...sanitizePush(raw.push) };
   out.projectNotes = raw.projectNotes === true;
+  out.mainAgentOnly = raw.mainAgentOnly === true;
   return out;
 }
 function sanitizeStored(raw) {
@@ -536,6 +538,7 @@ function applyOptions(base, raw) {
   out.push = { ...base.push, ...sanitizePush(raw?.push) };
   if (raw && typeof raw === "object" && raw.projectNotes !== undefined)
     out.projectNotes = opts.projectNotes;
+  out.mainAgentOnly = opts.mainAgentOnly;
   return out;
 }
 async function saveConfig(storage, config) {
@@ -653,9 +656,10 @@ var src_default = {
     await ctx.session.hook("context", async (event) => {
       try {
         const e = event;
-        executors.set(e.sessionID, { key: executorKey(e.model), effort: e.model?.variant });
         const config = await read();
-        if (!shouldGuide(config, executorKey(e.model), e.model?.variant)) {
+        const child = config.mainAgentOnly ? (await ctx.session.get({ sessionID: e.sessionID }))?.parentID !== undefined : false;
+        executors.set(e.sessionID, { key: executorKey(e.model), effort: e.model?.variant, child });
+        if (child || !shouldGuide(config, executorKey(e.model), e.model?.variant)) {
           if (e.tools)
             delete e.tools.advisor;
           return;
@@ -669,7 +673,7 @@ var src_default = {
       if (config.push.mode === "off" || config.model === undefined)
         return;
       const executor = executors.get(sessionID);
-      if (!executor || !shouldGuide(config, executor.key, executor.effort))
+      if (!executor || executor.child || !shouldGuide(config, executor.key, executor.effort))
         return;
       const ref = parseModelRef(config.model);
       if (!ref)

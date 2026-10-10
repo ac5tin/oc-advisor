@@ -29,6 +29,7 @@ function setup(options: Record<string, unknown>, directory = "/tmp/opencode") {
   const registry: Record<string, any> = {};
   const generated: string[] = [];
   const synthetics: any[] = [];
+  const sessions: Record<string, any> = {};
   const events = eventStream();
   let reviewText = "[concern] Check the cache key.";
   const ctx: any = {
@@ -37,6 +38,7 @@ function setup(options: Record<string, unknown>, directory = "/tmp/opencode") {
     options,
     event: { subscribe: events.subscribe },
     session: {
+      get: async ({ sessionID }: { sessionID: string }) => sessions[sessionID],
       context: async () => [{ id: "m1", type: "user", text: "fix the bug" }],
       hook: async (name: string, cb: (event: any) => Promise<void>) => {
         hooks[name] = cb;
@@ -65,6 +67,7 @@ function setup(options: Record<string, unknown>, directory = "/tmp/opencode") {
     registry,
     generated,
     synthetics,
+    sessions,
     emit: events.emit,
     setReview: (text: string) => (reviewText = text),
   };
@@ -124,6 +127,36 @@ describe("context hook", () => {
     const xhigh = event("xhigh");
     await s.hooks.context!(xhigh);
     expect(xhigh.tools.advisor).toBeUndefined();
+  });
+
+  test("mainAgentOnly removes the advisor tool in a child session", async () => {
+    const s = setup({ model: "p/strong", mainAgentOnly: true });
+    await plugin.setup(s.ctx);
+    s.sessions.s1 = { id: "s1", parentID: "ses_parent" };
+    const e = event();
+    await s.hooks.context!(e);
+    expect(e.tools.advisor).toBeUndefined();
+    expect(e.tools.read).toBeDefined();
+    expect(e.system.length).toBe(1);
+  });
+
+  test("mainAgentOnly keeps the advisor tool in the main session", async () => {
+    const s = setup({ model: "p/strong", mainAgentOnly: true });
+    await plugin.setup(s.ctx);
+    const e = event();
+    await s.hooks.context!(e);
+    expect(e.tools.advisor).toBeDefined();
+    expect(e.system.length).toBe(2);
+  });
+
+  test("children keep the advisor tool when mainAgentOnly is not set", async () => {
+    const s = setup({ model: "p/strong" });
+    await plugin.setup(s.ctx);
+    s.sessions.s1 = { id: "s1", parentID: "ses_parent" };
+    const e = event();
+    await s.hooks.context!(e);
+    expect(e.tools.advisor).toBeDefined();
+    expect(e.system.length).toBe(2);
   });
 });
 
@@ -222,6 +255,26 @@ describe("push mode", () => {
     s.emit(run());
     await flush();
     expect(s.generated.length).toBe(0);
+  });
+
+  test("mainAgentOnly never reviews a child run", async () => {
+    const s = setup({ model: "p/strong", mainAgentOnly: true, push: { mode: "agent-end" } });
+    await plugin.setup(s.ctx);
+    s.sessions.s1 = { id: "s1", parentID: "ses_parent" };
+    await s.hooks.context!(event());
+    s.emit(run());
+    await flush();
+    expect(s.generated.length).toBe(0);
+    expect(s.synthetics.length).toBe(0);
+  });
+
+  test("mainAgentOnly still reviews a main run", async () => {
+    const s = setup({ model: "p/strong", mainAgentOnly: true, push: { mode: "agent-end" } });
+    await plugin.setup(s.ctx);
+    await s.hooks.context!(event());
+    s.emit(run());
+    await flush();
+    expect(s.synthetics.length).toBe(1);
   });
 
   test("a deleted session is forgotten and no longer reviewed", async () => {

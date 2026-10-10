@@ -66,17 +66,18 @@ Checks run in this order. The first one that fails ends the run with no note and
 
 1. `mode` is `agent-end`, and a model is configured with `/advisor`.
 2. The executor that just ran is not in `disabledForModels` (a `minEffort` entry is evaluated against its `#variant`).
-3. **Cooldown.** If a cooldown is active, it is reduced by one and the run is skipped. **No reviewer call is made.**
-4. **Per-prompt cap.** If `maxPerPrompt` notes were already posted for this prompt, stop. **No reviewer call is made.**
-5. **Review.** The reviewer runs on the full transcript, using the same budget as a pull call.
-6. **Parse** the reply (section 2).
-7. **Severity.** Stop if the severity is below `minSeverity`, or is `SILENT`.
-8. **Repeat.** Stop if the note matches one of the last five posted notes after normalizing case and punctuation.
-9. **Post.** The note is added to the session as a queued synthetic message, labelled `Advisor note (<severity>): <text>`.
+3. **Main-only.** With `mainAgentOnly` on, the run is skipped when its session is a child (subagent) session. **No reviewer call is made.**
+4. **Cooldown.** If a cooldown is active, it is reduced by one and the run is skipped. **No reviewer call is made.**
+5. **Per-prompt cap.** If `maxPerPrompt` notes were already posted for this prompt, stop. **No reviewer call is made.**
+6. **Review.** The reviewer runs on the full transcript, using the same budget as a pull call.
+7. **Parse** the reply (section 2).
+8. **Severity.** Stop if the severity is below `minSeverity`, or is `SILENT`.
+9. **Repeat.** Stop if the note matches one of the last five posted notes after normalizing case and punctuation.
+10. **Post.** The note is added to the session as a queued synthetic message, labelled `Advisor note (<severity>): <text>`.
 
 A posted note starts a cooldown of `cooldownTurns` and counts toward `maxPerPrompt`.
 
-**Cost:** a reviewer call happens at step 5. Steps 3 and 4 avoid calls. A silent review still costs a call, and it does not start a cooldown. See section 7.
+**Cost:** a reviewer call happens at step 6. Steps 3 to 5 avoid calls. A silent review still costs a call, and it does not start a cooldown. See section 7.
 
 ---
 

@@ -741,6 +741,7 @@ describe("sanitizeOptions", () => {
       maxUses: 3,
       push: DEFAULT_PUSH,
       projectNotes: false,
+      mainAgentOnly: false,
     });
   });
 
@@ -751,6 +752,7 @@ describe("sanitizeOptions", () => {
       maxUses: 0,
       push: DEFAULT_PUSH,
       projectNotes: false,
+      mainAgentOnly: false,
     });
     expect(sanitizeOptions(undefined)).toEqual({
       model: undefined,
@@ -758,6 +760,7 @@ describe("sanitizeOptions", () => {
       maxUses: 0,
       push: DEFAULT_PUSH,
       projectNotes: false,
+      mainAgentOnly: false,
     });
   });
 
@@ -778,10 +781,21 @@ describe("sanitizeOptions", () => {
     expect(sanitizeOptions({ projectNotes: "yes" }).projectNotes).toBe(false);
   });
 
+  test("accepts mainAgentOnly only as a boolean", () => {
+    expect(sanitizeOptions({ mainAgentOnly: true }).mainAgentOnly).toBe(true);
+    expect(sanitizeOptions({ mainAgentOnly: "yes" }).mainAgentOnly).toBe(false);
+  });
+
   test("applyOptions overrides only the push keys present in options", () => {
     const base = sanitizeOptions({ push: { mode: "agent-end", maxPerPrompt: 4 } });
     const out = applyOptions(base, { push: { cooldownTurns: 1 } });
     expect(out.push).toEqual({ mode: "agent-end", minSeverity: "concern", cooldownTurns: 1, maxPerPrompt: 4 });
+  });
+
+  test("applyOptions derives mainAgentOnly from static options only", () => {
+    const stored = sanitizeOptions({ mainAgentOnly: true });
+    expect(applyOptions(stored, {}).mainAgentOnly).toBe(false);
+    expect(applyOptions(stored, { mainAgentOnly: true }).mainAgentOnly).toBe(true);
   });
 });
 
