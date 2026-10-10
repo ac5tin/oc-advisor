@@ -90,7 +90,7 @@ export default {
         const e = event as any;
         const config = await read();
         const child = config.mainAgentOnly
-          ? (await ctx.session.get({ sessionID: e.sessionID }))?.parentID !== undefined
+          ? Boolean((await ctx.session.get({ sessionID: e.sessionID }))?.parentID)
           : false;
         executors.set(e.sessionID, { key: executorKey(e.model), effort: e.model?.variant, child });
         if (child || !shouldGuide(config, executorKey(e.model), e.model?.variant)) {

@@ -158,6 +158,26 @@ describe("context hook", () => {
     expect(e.tools.advisor).toBeDefined();
     expect(e.system.length).toBe(2);
   });
+
+  test("mainAgentOnly keeps the advisor tool when parentID is missing", async () => {
+    const s = setup({ model: "p/strong", mainAgentOnly: true });
+    await plugin.setup(s.ctx);
+    s.sessions.s1 = { id: "s1" };
+    const e = event();
+    await s.hooks.context!(e);
+    expect(e.tools.advisor).toBeDefined();
+    expect(e.system.length).toBe(2);
+  });
+
+  test("mainAgentOnly keeps the advisor tool when parentID is null", async () => {
+    const s = setup({ model: "p/strong", mainAgentOnly: true });
+    await plugin.setup(s.ctx);
+    s.sessions.s1 = { id: "s1", parentID: null };
+    const e = event();
+    await s.hooks.context!(e);
+    expect(e.tools.advisor).toBeDefined();
+    expect(e.system.length).toBe(2);
+  });
 });
 
 describe("push mode", () => {
