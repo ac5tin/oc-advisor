@@ -64,9 +64,10 @@ export function createAdvisorCommand(host: CommandHost): AdvisorCommand {
         return;
       }
       if (arg.action === "show") {
+        const state = config.enabled === false ? "disabled" : config.model ? "enabled" : "off";
         await reply(
           config.model
-            ? `Advisor: ${config.model}${config.maxUses > 0 ? ` (max ${config.maxUses} calls per request)` : ""}. Push mode: ${config.push.mode}.`
+            ? `Advisor: ${state} — ${config.model}${config.maxUses > 0 ? ` (max ${config.maxUses} calls per request)` : ""}. Push mode: ${config.push.mode}.`
             : "Advisor: off. Set one with /advisor provider/model[#variant], e.g. /advisor anthropic/claude-opus-4-6#high",
         );
         return;

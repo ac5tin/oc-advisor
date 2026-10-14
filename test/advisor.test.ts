@@ -643,7 +643,7 @@ describe("advisor command", () => {
     const cmd = createAdvisorCommand(f.host);
     await cmd.execute({ sessionID: "s1", prompt: { text: "/advisor" }, delivery: "steer" } as any);
     expect(f.prompts.length).toBe(1);
-    expect(f.prompts[0].text).toContain("Advisor: anthropic/claude-opus-4-6#high");
+    expect(f.prompts[0].text).toContain("Advisor: enabled — anthropic/claude-opus-4-6#high");
   });
 
   test("show reports off when unconfigured", async () => {
