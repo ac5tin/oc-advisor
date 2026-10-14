@@ -50,13 +50,13 @@ export function isDisabledModel(executorRef: string, disabledForModels: readonly
   });
 }
 
-/** True when the advisor should be offered: a model is set and the executor isn't blocklisted. */
+/** True when the advisor should be offered: enabled, a model is set, and the executor isn't blocklisted. */
 export function shouldGuide(
-  config: { model?: string; disabledForModels: readonly DisabledEntry[] },
+  config: { enabled?: boolean; model?: string; disabledForModels: readonly DisabledEntry[] },
   executorRef: string,
   effort?: string,
 ): boolean {
-  return config.model !== undefined && !isDisabledModel(executorRef, config.disabledForModels, effort);
+  return config.enabled !== false && config.model !== undefined && !isDisabledModel(executorRef, config.disabledForModels, effort);
 }
 
 /** Absent or zero maxUses means unlimited. */
@@ -67,6 +67,7 @@ export function maxUsesExceeded(used: number, maxUses: number | undefined): bool
 
 export type AdvisorArg =
   | { action: "show" }
+  | { action: "on" }
   | { action: "off" }
   | { action: "set"; model: string }
   | { action: "push-show" }
@@ -81,6 +82,7 @@ const PUSH_USAGE =
 export function parseAdvisorArgs(text: string): AdvisorArg {
   const rest = text.replace(/^\s*\/advisor\b\s*/, "").trim();
   if (!rest) return { action: "show" };
+  if (rest.toLowerCase() === "on") return { action: "on" };
   if (rest.toLowerCase() === "off") return { action: "off" };
   const [head, ...args] = rest.split(/\s+/);
   if (head.toLowerCase() === "push") return parsePushArgs(args);

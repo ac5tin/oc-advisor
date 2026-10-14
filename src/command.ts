@@ -36,7 +36,7 @@ function describePush(push: PushConfig, projectNotes: boolean): string {
 export function createAdvisorCommand(host: CommandHost): AdvisorCommand {
   return {
     name: "advisor",
-    description: "Advisor reviewer: /advisor provider/model[#variant] | off | push [off|agent-end|min|cooldown|max] | notes on|off",
+    description: "Advisor reviewer: /advisor [on|off|provider/model[#variant]] | push [off|agent-end|min|cooldown|max] | notes on|off",
     execute: async ({ sessionID, prompt, delivery }) => {
       const reply = (text: string) => host.prompt({ sessionID, text, delivery });
       const config = await host.load();
@@ -71,9 +71,18 @@ export function createAdvisorCommand(host: CommandHost): AdvisorCommand {
         );
         return;
       }
+      if (arg.action === "on") {
+        await host.save({ ...config, enabled: true });
+        await reply(
+          config.model
+            ? `Advisor enabled: ${config.model}. Reply with one short confirmation.`
+            : "Advisor enabled, but no reviewer model is set. Use /advisor provider/model[#variant], e.g. /advisor anthropic/claude-opus-4-6#high.",
+        );
+        return;
+      }
       if (arg.action === "off") {
-        await host.save({ ...config, model: undefined });
-        await reply("Advisor disabled (a static options.model in opencode.json will re-enable it on restart). Reply with one short confirmation.");
+        await host.save({ ...config, enabled: false });
+        await reply("Advisor disabled. The reviewer model is kept; re-enable with /advisor on. Reply with one short confirmation.");
         return;
       }
       const ref = parseModelRef(arg.model);
@@ -100,7 +109,7 @@ export function createAdvisorCommand(host: CommandHost): AdvisorCommand {
         return;
       }
       const canonical = `${ref.providerID}/${found.id ?? ref.id}${ref.variant ? `#${ref.variant}` : ""}`;
-      await host.save({ ...config, model: canonical });
+      await host.save({ ...config, enabled: true, model: canonical });
       await reply(`Advisor reviewer model set to ${canonical}. Reply with one short confirmation.`);
     },
   };

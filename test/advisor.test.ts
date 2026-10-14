@@ -714,12 +714,13 @@ describe("advisor command", () => {
     expect(f.prompts[0].text).toContain("Project notes on");
   });
 
-  test("off clears the model", async () => {
+  test("off disables without clearing the model", async () => {
     const f = fakeCtx();
     f.store.set("config", { model: "anthropic/claude-opus-4-6", disabledForModels: [], maxUses: 0 });
     const cmd = createAdvisorCommand(f.host);
     await cmd.execute({ sessionID: "s1", prompt: { text: "/advisor off" }, delivery: "steer" } as any);
-    expect((f.store.get("config") as any).model).toBeUndefined();
+    expect((f.store.get("config") as any).enabled).toBe(false);
+    expect((f.store.get("config") as any).model).toBe("anthropic/claude-opus-4-6");
     expect(f.prompts[0].text).toContain("disabled");
   });
 });
@@ -736,6 +737,7 @@ describe("sanitizeOptions", () => {
     expect(
       sanitizeOptions({ model: "anthropic/claude-opus-4-6#high", disabledForModels: ["a/b"], maxUses: 3 }),
     ).toEqual({
+      enabled: true,
       model: "anthropic/claude-opus-4-6#high",
       disabledForModels: ["a/b"],
       maxUses: 3,

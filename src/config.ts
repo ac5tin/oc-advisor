@@ -2,6 +2,7 @@ import { EFFORT_LEVELS, parseModelRef, type DisabledEntry } from "./advisor";
 import { DEFAULT_PUSH, type PushConfig } from "./push";
 
 export interface AdvisorConfig {
+  enabled?: boolean;
   model?: string;
   disabledForModels: DisabledEntry[];
   maxUses: number;
@@ -31,6 +32,7 @@ export const DEFAULT_CONFIG: AdvisorConfig = {
 };
 
 export interface RawOptions {
+  enabled?: unknown;
   model?: unknown;
   disabledForModels?: unknown;
   maxUses?: unknown;
@@ -64,6 +66,7 @@ function isNonNegativeInt(v: unknown): v is number {
 export function sanitizeOptions(raw: RawOptions | undefined): AdvisorConfig {
   const out: AdvisorConfig = { ...DEFAULT_CONFIG, disabledForModels: [], push: { ...DEFAULT_PUSH } };
   if (!raw || typeof raw !== "object") return out;
+  if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
   if (typeof raw.model === "string" && parseModelRef(raw.model)) out.model = raw.model.trim();
   if (Array.isArray(raw.disabledForModels)) {
     out.disabledForModels = raw.disabledForModels.filter(isDisabledEntry);
@@ -74,6 +77,7 @@ export function sanitizeOptions(raw: RawOptions | undefined): AdvisorConfig {
   out.push = { ...DEFAULT_PUSH, ...sanitizePush(raw.push) };
   out.projectNotes = raw.projectNotes === true;
   out.mainAgentOnly = raw.mainAgentOnly === true;
+  if (raw.enabled === undefined && out.model !== undefined) out.enabled = true;
   return out;
 }
 
@@ -102,6 +106,8 @@ export function applyOptions(base: AdvisorConfig, raw: RawOptions | undefined): 
   }
   if (opts.maxUses > 0) out.maxUses = opts.maxUses;
   out.push = { ...base.push, ...sanitizePush(raw?.push) };
+  if (raw && typeof raw === "object" && raw.enabled !== undefined) out.enabled = opts.enabled;
+  else if (opts.model !== undefined) out.enabled = true;
   if (raw && typeof raw === "object" && raw.projectNotes !== undefined) out.projectNotes = opts.projectNotes;
   // mainAgentOnly is static-only: opencode.json is the sole source; stored config is never consulted.
   out.mainAgentOnly = opts.mainAgentOnly;

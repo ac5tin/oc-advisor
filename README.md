@@ -71,7 +71,7 @@ Static config in `opencode.json` (takes precedence, restart to apply):
 
 | Key | What it does | Default |
 | --- | --- | --- |
-| `model` | Reviewer model as `provider/model[#variant]`. Persisted by `/advisor`. | unset — advisor off |
+| `enabled` | Master on/off switch for the advisor. Disabling keeps the configured model. | `true` when `model` is set |
 | `disabledForModels` | Executor models the tool is hidden for. Entries are `"provider/model"` (any effort) or `{ "model": "provider/model", "minEffort": "high" }` (only at or above that effort, read from the executor's `#variant`). | `[]` |
 | `maxUses` | Cap advisor calls per user request. `0` or unset = unlimited. Counter resets on each new prompt. | `0` |
 | `push` | Push mode: `{ "mode": "off" \| "agent-end", "minSeverity": "nit" \| "concern" \| "blocker", "cooldownTurns": 3, "maxPerPrompt": 2 }`. The reviewer may post a note after a finished run. See [docs/push-mode.md](./docs/push-mode.md). | `{ "mode": "off", … }` |

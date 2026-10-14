@@ -88,7 +88,7 @@ function isDisabledModel(executorRef, disabledForModels, effort) {
   });
 }
 function shouldGuide(config, executorRef, effort) {
-  return config.model !== undefined && !isDisabledModel(executorRef, config.disabledForModels, effort);
+  return config.enabled !== false && config.model !== undefined && !isDisabledModel(executorRef, config.disabledForModels, effort);
 }
 function maxUsesExceeded(used, maxUses) {
   if (maxUses === undefined || maxUses <= 0)
@@ -100,6 +100,8 @@ function parseAdvisorArgs(text) {
   const rest = text.replace(/^\s*\/advisor\b\s*/, "").trim();
   if (!rest)
     return { action: "show" };
+  if (rest.toLowerCase() === "on")
+    return { action: "on" };
   if (rest.toLowerCase() === "off")
     return { action: "off" };
   const [head, ...args] = rest.split(/\s+/);
@@ -404,7 +406,7 @@ function describePush(push, projectNotes) {
 function createAdvisorCommand(host) {
   return {
     name: "advisor",
-    description: "Advisor reviewer: /advisor provider/model[#variant] | off | push [off|agent-end|min|cooldown|max] | notes on|off",
+    description: "Advisor reviewer: /advisor [on|off|provider/model[#variant]] | push [off|agent-end|min|cooldown|max] | notes on|off",
     execute: async ({ sessionID, prompt, delivery }) => {
       const reply = (text) => host.prompt({ sessionID, text, delivery });
       const config = await host.load();
@@ -433,9 +435,14 @@ function createAdvisorCommand(host) {
         await reply(config.model ? `Advisor: ${config.model}${config.maxUses > 0 ? ` (max ${config.maxUses} calls per request)` : ""}. Push mode: ${config.push.mode}.` : "Advisor: off. Set one with /advisor provider/model[#variant], e.g. /advisor anthropic/claude-opus-4-6#high");
         return;
       }
+      if (arg.action === "on") {
+        await host.save({ ...config, enabled: true });
+        await reply(config.model ? `Advisor enabled: ${config.model}. Reply with one short confirmation.` : "Advisor enabled, but no reviewer model is set. Use /advisor provider/model[#variant], e.g. /advisor anthropic/claude-opus-4-6#high.");
+        return;
+      }
       if (arg.action === "off") {
-        await host.save({ ...config, model: undefined });
-        await reply("Advisor disabled (a static options.model in opencode.json will re-enable it on restart). Reply with one short confirmation.");
+        await host.save({ ...config, enabled: false });
+        await reply("Advisor disabled. The reviewer model is kept; re-enable with /advisor on. Reply with one short confirmation.");
         return;
       }
       const ref = parseModelRef(arg.model);
@@ -455,7 +462,7 @@ function createAdvisorCommand(host) {
         return;
       }
       const canonical = `${ref.providerID}/${found.id ?? ref.id}${ref.variant ? `#${ref.variant}` : ""}`;
-      await host.save({ ...config, model: canonical });
+      await host.save({ ...config, enabled: true, model: canonical });
       await reply(`Advisor reviewer model set to ${canonical}. Reply with one short confirmation.`);
     }
   };
@@ -503,6 +510,8 @@ function sanitizeOptions(raw) {
   const out = { ...DEFAULT_CONFIG, disabledForModels: [], push: { ...DEFAULT_PUSH } };
   if (!raw || typeof raw !== "object")
     return out;
+  if (typeof raw.enabled === "boolean")
+    out.enabled = raw.enabled;
   if (typeof raw.model === "string" && parseModelRef(raw.model))
     out.model = raw.model.trim();
   if (Array.isArray(raw.disabledForModels)) {
@@ -514,6 +523,8 @@ function sanitizeOptions(raw) {
   out.push = { ...DEFAULT_PUSH, ...sanitizePush(raw.push) };
   out.projectNotes = raw.projectNotes === true;
   out.mainAgentOnly = raw.mainAgentOnly === true;
+  if (raw.enabled === undefined && out.model !== undefined)
+    out.enabled = true;
   return out;
 }
 function sanitizeStored(raw) {
@@ -536,6 +547,10 @@ function applyOptions(base, raw) {
   if (opts.maxUses > 0)
     out.maxUses = opts.maxUses;
   out.push = { ...base.push, ...sanitizePush(raw?.push) };
+  if (raw && typeof raw === "object" && raw.enabled !== undefined)
+    out.enabled = opts.enabled;
+  else if (opts.model !== undefined)
+    out.enabled = true;
   if (raw && typeof raw === "object" && raw.projectNotes !== undefined)
     out.projectNotes = opts.projectNotes;
   out.mainAgentOnly = opts.mainAgentOnly;
@@ -576,6 +591,9 @@ function createAdvisorTool(host) {
       options: { codemode: false },
       execute: async (_input, context) => {
         const config = await host.loadConfig();
+        if (config.enabled === false) {
+          return { content: "Advisor is disabled. The user can enable it with /advisor on or in settings." };
+        }
         if (!config.model) {
           return { content: "No advisor model is configured. The user can enable one with the /advisor command." };
         }
@@ -670,7 +688,7 @@ var src_default = {
     });
     const afterRun = async (sessionID) => {
       const config = await read();
-      if (config.push.mode === "off" || config.model === undefined)
+      if (config.enabled === false || config.push.mode === "off" || config.model === undefined)
         return;
       const executor = executors.get(sessionID);
       if (!executor || executor.child || !shouldGuide(config, executor.key, executor.effort))

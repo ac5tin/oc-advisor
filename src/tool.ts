@@ -43,6 +43,9 @@ export function createAdvisorTool(host: ToolHost): AdvisorTool {
       options: { codemode: false },
       execute: async (_input: unknown, context: { sessionID: string; id: string; signal?: AbortSignal }) => {
         const config = await host.loadConfig();
+        if (config.enabled === false) {
+          return { content: "Advisor is disabled. The user can enable it with /advisor on or in settings." };
+        }
         if (!config.model) {
           return { content: "No advisor model is configured. The user can enable one with the /advisor command." };
         }

@@ -108,7 +108,7 @@ export default {
     // Failures are swallowed so a broken review never disturbs the executor.
     const afterRun = async (sessionID: string) => {
       const config = await read();
-      if (config.push.mode === "off" || config.model === undefined) return;
+      if (config.enabled === false || config.push.mode === "off" || config.model === undefined) return;
       const executor = executors.get(sessionID);
       if (!executor || executor.child || !shouldGuide(config, executor.key, executor.effort)) return;
       const ref = parseModelRef(config.model);
